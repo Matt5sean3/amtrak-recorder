@@ -23,48 +23,236 @@ from MySQLdb import connect
 # Needs to close gracefully with SIGINT
 import signal
 
-from json import load as jsonload
+from json import load as jsonload, dumps as jsonsaves
 
 # Updates every 5 minutes
 trainDelaySecs = 60 * 5
 
-class RouteSegment(object):
-  north = 0
-  south = 0
-  east = 0
-  west = 0
-  def __init__(self, n, s, e, w):
-    north = n
-    south = s
-    east = e
-    west = w
-  def __hash__(self):
-    # Sums all directions, which should
-    # not collide all that often
-    return self.north + self.south + self.east + self.west
-  def __eq__(self, other):
-    return self.north == other.north and \
-      self.south == other.south and \
-      self.east == other.east and \
-      self.west == other.west
-  # The route segment is a bounding box, not a line segment
-  # so it's not perfect to work with
-  def within(lat, lon):
-    return lat < north and \
-      lat > south and \
-      lon < east and \
-      lon > west
+class MySQLObject(object):
+  TableName = ""
+  Fields = []
+  FieldDefinition = []
+  FieldDefault = {}
+  WriteFields = None
+  ReadFields = None
+  data = {}
+  def __init__(self):
+    if not self.WriteFields:
+      self.WriteFields = Fields
+    if not self.ReadFields:
+      self.ReadFields = Fields
+  def subList(self, num):
+    return ", ".join(["%s"] * num)
+  def getDataList(self, names):
+    ret = []
+    for name in names:
+      ret.append(self.data.get(name))
+    return ret
+  def initialize(self, db):
+    cur = db.cursor()
+    rep = [self.TableName]
+    rep.extend(self.FieldDef)
+    cur.execute( \
+      "CREATE TABLE %s (" + subList(len(self.FieldDefinition)) + ");", \
+      rep)
+    cur.close()
+    db.commit()
+  def write(self, db):
+    cur = db.cursor()
+    slots = self.subList(len(self.WriteFields))
+    rep = [self.TableName]
+    rep.extend(self.WriteFields)
+    rep.extend(self.getDataList(self.WriteFields))
+    cur.execute( \
+      "INSERT INTO %s (" + slots + ") VALUE " + \
+      "(" + slots + ")",
+      rep
+      )
+    cur.close()
+    db.commit()
+  def copy(self):
+    # Note: copy just creates a MySQLObject
+    # if the object needs to be used as more than just a MySQLObject
+    # the copy method needs to be overriden
+    dup = MySQLObject()
+    dup.TableName = self.TableName
+    dup.Fields = self.Fields
+    dup.FieldDefinition = self.FieldDefinition
+    dup.FieldDefault = self.FieldDefault
+    dup.WriteFields = self.WriteFields
+    dup.ReadFields = self.ReadFields
+    dup.data = self.data.copy()
+  def writeStream(self, f):
+    # Writes the data to a file-like object
+    # as a JSON dict
+    return jsonsaves(self.data)
 
-class Train(object):
-  number = ""
-  route = None
-  def __init__(self, number, route):
-    pass
+class MySQLObjectGroup(object):
+  base = None
+  entries = []
+  def __init__(self, b):
+    base = b
+    entries = [b]
+  def __len__(self):
+    return len(entries)
+  def get(self, idx):
+    return entries.get(idx)
+  def write(self, db):
+    cur = db.cursor()
+    slots = base.subList(len(base.WriteFields))
+    rep = [base.TableName]
+    rep.extend(base.WriteFields)
+    for entry in entries:
+      rep.extend(entry.data)
+    cur.execute( \
+      "INSERT INTO %s (" + slots + ") VALUES " + \
+      ", ".join(["(" + slots + ")"] * self.size()) + \
+      ";", rep);
+    cur.close()
+    db.commit()
+  def read(self, db):
+    # Appends the results to the end of the existing list
+    cur = db.cursor()
+    rep = []
+    rep.extend(base.ReadFields)
+    rep.extend(base.TableName)
+    cur.execute( \
+      "SELECT " + ", ".join(["%s"] * len(base.ReadFields)) + \
+      " FROM %s;", rep)
+    for fetch in cur:
+      entry = base.copy()
+      idx = 0
+      for field in ReadFields:
+        entry.data[field] = entry[idx]
+        idx += 1
+      entries.append(entry)
+    cur.close()
+    def writeStream(self, f):
+      # Writes the group of objects as JSON objects
+      justdata = []
+      for entry in entries:
+        justdata.append(entry.data)
+      return jsonsaves(justdata)
+
+class Route(MySQLObject):
+  TableName = "routes"
+  name = ""
+  Fields = [ \
+    'ID', \
+    'name' \
+  ]
+  WriteFields = [ \
+    'name' \
+  ]
+  FieldDefinition = [ \
+    'ID INT AUTO_INCREMENT', \
+    'name TEXT', \
+    'PRIMARY KEY(id)' \
+  ]
+  FieldDefault = {
+    "ID": 0, \
+    "name": ""
+  }
+  def __init__(self, n):
+    name = n
+    super(Route, self).__init__(self);
+
+class Segment(MySQLObject):
+  TableName = "segments"
+  Fields = [ \
+    "RouteID", \
+    "North", \
+    "South", \
+    "East", \
+    "West" \
+    ]
+  FieldDefinition = [ \
+    "RouteID INT", \
+    "North DOUBLE", \
+    "South DOUBLE", \
+    "East DOUBLE", \
+    "West DOUBLE" \
+    ]
+  def __init__(self, routes, r = "", n = 0.0, s = 0.0, e = 0.0, w = 0.0):
+    self.data["route"] = r;
+    self.data["north"] = n;
+    self.data["south"] = s;
+    self.data["east"] = e;
+    self.data["west"] = w;
+    super(Segment, self).__init__(self);
+
+class Train(MySQLObject):
+  TableName = "trains"
+  Fields = [ \
+    "ID", \
+    "TrainNum", \
+    "RouteID", \
+    "OrigStation", \
+    "DestStation" \
+    ]
+  FieldDefinition = [ \
+    "ID INT", \
+    "TrainNum INT", \
+    "RouteID INT", \
+    "OrigStation CHAR(3)", \
+    "DestStation CHAR(3)", \
+    "PRIMARY KEY(ID)" \
+    ]
+
+class TrainReading(MySQLObject):
+  TableName = "readings"
+  Fields = [ \
+    "TrainID", \
+    "Latitude", \
+    "Longitude", \
+    "Time", \
+    "Speed", \
+    "Heading", \
+    "State"]
+  FieldDefinition = [
+    "TrainID INT", \
+    "Latitude DOUBLE", \
+    "Longitude DOUBLE", \
+    "Time DATETIME", \
+    "Speed DOUBLE", \
+    "Heading ENUM('N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW')", \
+    "State ENUM('Predeparture', 'Active', 'Completed')" \
+    ]
+
+class TrainStop(MySQLObject):
+  TableName = "stops"
+  Fields = [ \
+    "StationID", \
+    "TrainID", \
+    "OrigSchDep" \
+    ]
+  FieldDefinition = [ \
+    "StationID INT", \
+    "TrainID INT", \
+    "OrigSchDep DATETIME" \
+    ]
+
+class Station(MySQLObject):
+  TableName = "stations"
+  Fields = [ \
+    "ID", \
+    "Name", \
+    "Code", \
+    "Latitude", \
+    "Longitude" \
+    ]
+  FieldDefinition = [ \
+    "ID INT AUTO_INCREMENT", \
+    "Name TEXT", \
+    "Code CHAR(3)", \
+    "Latitude DOUBLE", \
+    "Longitude DOUBLE"
+    ]
 
 def parseAmtrakDateTime(s):
   return datetime.strptime(s, "%m/%d/%Y %I:%M:%S %p")
 
-class TrainReading(object):
+class TrainReading(MySQLObject):
   data = None
   Fields = [ \
     "Latitude", \
@@ -87,7 +275,7 @@ class TrainReading(object):
     "LastValTS", \
     "Heading"
     ]
-  FieldTypeDef = [
+  FieldTypeDefinition = [
     "ID INT", \
     "Latitude DOUBLE", \
     "Longitude DOUBLE", \
