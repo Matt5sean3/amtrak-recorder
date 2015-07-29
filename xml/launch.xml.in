@@ -18,7 +18,7 @@
     <env key="DB_PASSWD" value="train spotter" />
     <env key="DB_NAME" value="train_database" />
     <interpreter name="python_interpreter">
-      <path absolute="true">
+      <path absolute="true" os="linux">
         <directory>usr</directory>
         <directory>bin</directory>
         <directory>python</directory>
