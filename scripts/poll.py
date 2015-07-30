@@ -25,8 +25,6 @@ import signal
 
 from json import load as jsonload, dumps as jsonsaves
 
-# Updates every 5 minutes
-trainDelaySecs = 60 * 5
 
 class MySQLObject(object):
   TableName = ""
@@ -38,9 +36,9 @@ class MySQLObject(object):
   data = {}
   def __init__(self):
     if not self.WriteFields:
-      self.WriteFields = Fields
+      self.WriteFields = self.Fields
     if not self.ReadFields:
-      self.ReadFields = Fields
+      self.ReadFields = self.Fields
   def subList(self, num):
     return ", ".join(["%s"] * num)
   def getDataList(self, names):
@@ -48,13 +46,25 @@ class MySQLObject(object):
     for name in names:
       ret.append(self.data.get(name))
     return ret
-  def initialize(self, db):
+  def initialize(self, db, existing):
+    if self.TableName in existing:
+      return
     cur = db.cursor()
     rep = [self.TableName]
-    rep.extend(self.FieldDef)
+    # Note: FieldDefinition is not escaped
+    # so don't allow the field definitions to be publicly modified
+    print \
+      "CREATE TABLE " + self.TableName + \
+      " (" + ", ".join(self.FieldDefinition) + ");"
     cur.execute( \
-      "CREATE TABLE %s (" + subList(len(self.FieldDefinition)) + ");", \
-      rep)
+      "CREATE TABLE " + self.TableName + \
+      " (" + ", ".join(self.FieldDefinition) + ");")
+    cur.close()
+    db.commit()
+  def destroy(self, db):
+    cur = db.cursor()
+    cur.execute( \
+      "DROP TABLE %s", (self.TableName,))
     cur.close()
     db.commit()
   def write(self, db):
@@ -86,17 +96,21 @@ class MySQLObject(object):
     # Writes the data to a file-like object
     # as a JSON dict
     return jsonsaves(self.data)
+  @staticmethod
+  def getExistingTables(db):
+    cur = db.cursor()
+    cur.execute("SHOW TABLES;");
+    tables = []
+    for result in cur:
+      tables.append(result[0])
+    cur.close()
+    return tables
 
-class MySQLObjectGroup(object):
+class MySQLObjectGroup(list):
   base = None
-  entries = []
   def __init__(self, b):
     base = b
-    entries = [b]
-  def __len__(self):
-    return len(entries)
-  def get(self, idx):
-    return entries.get(idx)
+    super(MySQLObjectGroup, self).__init__()
   def write(self, db):
     cur = db.cursor()
     slots = base.subList(len(base.WriteFields))
@@ -153,9 +167,10 @@ class Route(MySQLObject):
     "ID": 0, \
     "name": ""
   }
-  def __init__(self, n):
+  def __init__(self, n = ""):
     name = n
-    super(Route, self).__init__(self);
+    super(Route, self).__init__();
+
 
 class Segment(MySQLObject):
   TableName = "segments"
@@ -173,13 +188,6 @@ class Segment(MySQLObject):
     "East DOUBLE", \
     "West DOUBLE" \
     ]
-  def __init__(self, routes, r = "", n = 0.0, s = 0.0, e = 0.0, w = 0.0):
-    self.data["route"] = r;
-    self.data["north"] = n;
-    self.data["south"] = s;
-    self.data["east"] = e;
-    self.data["west"] = w;
-    super(Segment, self).__init__(self);
 
 class Train(MySQLObject):
   TableName = "trains"
@@ -187,15 +195,15 @@ class Train(MySQLObject):
     "ID", \
     "TrainNum", \
     "RouteID", \
-    "OrigStation", \
-    "DestStation" \
+    "OrigStationCode", \
+    "DestStationCode" \
     ]
   FieldDefinition = [ \
     "ID INT", \
     "TrainNum INT", \
     "RouteID INT", \
-    "OrigStation CHAR(3)", \
-    "DestStation CHAR(3)", \
+    "OrigStationCode CHAR(3)", \
+    "DestStationCode CHAR(3)", \
     "PRIMARY KEY(ID)" \
     ]
 
@@ -222,12 +230,12 @@ class TrainReading(MySQLObject):
 class TrainStop(MySQLObject):
   TableName = "stops"
   Fields = [ \
-    "StationID", \
+    "StationCode", \
     "TrainID", \
     "OrigSchDep" \
     ]
   FieldDefinition = [ \
-    "StationID INT", \
+    "StationCode CHAR(3)", \
     "TrainID INT", \
     "OrigSchDep DATETIME" \
     ]
@@ -235,154 +243,118 @@ class TrainStop(MySQLObject):
 class Station(MySQLObject):
   TableName = "stations"
   Fields = [ \
-    "ID", \
-    "Name", \
     "Code", \
+    "Name", \
     "Latitude", \
-    "Longitude" \
+    "Longitude", \
+    "Address", \
+    "City", \
+    "State", \
+    "ZipCode", \
+    "IsTrainSt", \
+    "Type", \
+    "DateModif" \
     ]
   FieldDefinition = [ \
-    "ID INT AUTO_INCREMENT", \
+    "Code CHAR(3) PRIMARY KEY", \
     "Name TEXT", \
-    "Code CHAR(3)", \
     "Latitude DOUBLE", \
-    "Longitude DOUBLE"
+    "Longitude DOUBLE", \
+    "Address TEXT", \
+    "City TEXT", \
+    "State ENUM('AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA'," + \
+               "'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD'," + \
+               "'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ'," + \
+               "'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC'," + \
+               "'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY', '')", \
+    "ZipCode INT", \
+    "IsTrainSt BOOLEAN", \
+    "Type ENUM('', 'Platform only (no shelter)', 'Platform with Shelter', 'Station Building (with waiting room)')", \
+    "DateModif DATETIME" \
     ]
+  def __init__(self, \
+      code = "\0\0\0", 
+      lonlat = (0.0, 0.0), 
+      address = "", 
+      city = "",
+      state = "",
+      zipCode = 0,
+      isTrainStation = False,
+      stationType = '',
+      modified = datetime(1900, 1, 1)):
+    self.data = {}
+    self.data["Code"] = code;
+    self.data["Longitude"] = lonlat[0];
+    self.data["Latitude"] = lonlat[1];
+    self.data["Address"] = address
+    self.data["City"] = city
+    self.data["State"] = state
+    self.data["ZipCode"] = zipCode
+    self.data["IsTrainSt"] = isTrainStation
+    self.data["Type"] = stationType
+    self.data["DateModif"] = modified
+
+
+def readGoogleEngineAsset(asset_id):
+  asset_url = "https://www.googleapis.com/mapsengine/v1/tables/" + \
+    asset_id + \
+    "/features?version=published&key=" + \
+    environ.get("GOOGLE_ENGINE_KEY")# + \
+  done = False
+  readings = []
+  url = asset_url
+  pages = []
+  while not done:
+    f = urlopen(url)
+    data = jsonload(f)
+    if "nextPageToken" in data:
+      url = asset_url + "&pageToken=" + \
+        str(data["nextPageToken"])
+    else:
+      done = True
+    pages.append(data)
+  return pages
 
 def parseAmtrakDateTime(s):
   return datetime.strptime(s, "%m/%d/%Y %I:%M:%S %p")
 
-class TrainReading(MySQLObject):
-  data = None
-  Fields = [ \
-    "Latitude", \
-    "Longitude", \
-    "ID", \
-    "TrainNum", \
-    "Aliases", \
-    "OrigSchDep", \
-    "OriginTZ", \
-    "TrainState", \
-    "Velocity", \
-    "RouteName", \
-    "CMSID", \
-    "OrigCode", \
-    "DestCode", \
-    "EventCode", \
-    "EventDT", \
-    "EventT", \
-    "EventTZ", \
-    "LastValTS", \
-    "Heading"
-    ]
-  FieldTypeDefinition = [
-    "ID INT", \
-    "Latitude DOUBLE", \
-    "Longitude DOUBLE", \
-    "TrainNum INT UNSIGNED", \
-    "Aliases TEXT", \
-    "OrigSchDep DATETIME", \
-    "OriginTZ CHAR", \
-    "TrainState ENUM('Predeparture', 'Active', 'Completed')", \
-    "Velocity DOUBLE", \
-    "RouteName TEXT", \
-    "CMSID BIGINT", \
-    "OrigCode CHAR(3)", \
-    "DestCode CHAR(3)", \
-    "EventCode CHAR(3)", \
-    "EventDT DATETIME", \
-    "EventT ENUM('Update', 'Estimated Arrival')", \
-    "EventTZ CHAR(1)", \
-    "LastValTS DATETIME", \
-    "Heading ENUM('N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW')"
-    ]
-  FieldDefaults = {
-    "ID": 0,
-    "Latitude": 0,
-    "Longitude": 0,
-    "TrainNum": 0,
-    "Aliases": "",
-    "OrigSchDep": "01/01/1900 12:00:00 AM",
-    "OriginTZ": chr(0),
-    "TrainState": "",
-    "Velocity": 0,
-    "RouteName": "",
-    "CMSID": 0,
-    "OrigCode": "",
-    "DestCode": "",
-    "EventCode": "",
-    "EventDT": "01/01/1900 12:00:00 AM",
-    "EventT": "Update",
-    "EventTZ": chr(0),
-    "LastValTS": "01/01/1900 12:00:00 AM",
-    "Heading": ""
-    }
-  FieldConversions = {
-    "OrigSchDep": parseAmtrakDateTime,
-    "EventDT": parseAmtrakDateTime,
-    "LastValTS": parseAmtrakDateTime
-    }
-  def __init__(self, source):
-    self.data = source["properties"].copy();
-    self.data["Longitude"] = source["geometry"]["coordinates"][0];
-    self.data["Latitude"] = source["geometry"]["coordinates"][1];
-    for entry, value in TrainReading.FieldDefaults.iteritems():
-      if not entry in self.data or self.data[entry] == '':
-        self.data[entry] = value
-    for entry, value in TrainReading.FieldConversions.iteritems():
-      self.data[entry] = value(self.data[entry])
-  def getList(self, order):
-    ret = []
-    for item in order:
-      entry = self.data.get(item) or TrainReading.FieldDefaults.get(item)
-      ret.append(entry)
-    return ret
-  def record(self, cur):
-    # Uses a provided database cursor to write
-    # Record to the train_reading table
-    cur.execute("INSERT INTO train_reading (" + \
-      ", ".join(TrainReading.Fields) + \
-      ") VALUES (" + \
-      ", ".join(["%s"] * len(TrainReading.Fields)) + \
-      ");", getList(TrainReading.Fields))
-  @staticmethod
-  def recordList(cur, readings):
-    data = []
-    for reading in readings:
-      data.extend(reading.getList(TrainReading.Fields))
-    # Splat operator, love the name
-    cur.execute("INSERT INTO train_reading (" + \
-      ", ".join(TrainReading.Fields) + \
-      ") VALUES " + \
-      ", ".join(["(" + ", ".join(["%s"] * len(TrainReading.Fields)) + ")"] * \
-      len(readings)) + \
-      ";", data)
-  @staticmethod
-  def initializeTable(cur):
-    cur.execute("CREATE TABLE IF NOT EXISTS train_reading (" +
-      ','.join(TrainReading.FieldTypeDef) + ");")
+def decode_routes_page(uri):
+  f = urlopen(uri);
+  page = jsonload(f)
+  return [page]
+
+def decode_trains_asset(asset_id):
+  print "=== TRAIN ASSETS ==="
+  pages = readGoogleEngineAsset(asset_id)
+  for page in pages:
+    pass
+  return pages
+
+def decode_stations_asset(asset_id):
+  print "=== STATION ASSETS ==="
+  pages = readGoogleEngineAsset(asset_id)
+  stations = MySQLObjectGroup(Station())
+  for page in pages:
+    for feature in page.get("features"):
+      # Convert the station data to objects
+      geom = feature.get("geometry")
+      point = geom.get("coordinates")
+      properties = feature.get("properties")
+      # Needs to convert datetime
+      stations.append(Station( \
+        properties.get("Code"), \
+        geom.get("coordinates"), \
+        properties.get("Address1"), \
+        properties.get("City"), \
+        properties.get("State"), \
+        properties.get("ZipCode"), \
+        properties.get("IsTrainSt") == 'Y', \
+        properties.get("StaType"), \
+        parseAmtrakDateTime(properties.get("DateModif")) \
+        ))
+  return stations
 
 # within 0.005 degrees latitude/longitude (~500 meters) are the same position
-
-def as_route_segment_dict(json):
-  # Creates a dict with geometry for all routes
-  # Names are always forced to lower case
-  segments = dict()
-  for entry in json["features"]:
-    properties = entry["properties"]
-    names = properties["NAME"].split(" / ")
-    for name in names:
-      lowerName = name.lower()
-      segment = RouteSegment( \
-        properties["NORTH"], \
-        properties["SOUTH"], \
-        properties["EAST"], \
-        properties["WEST"])
-      if lowerName in ret:
-        segments[lowerName].append(segment)
-      else:
-        segments[lowerName] = [segment]
-  return segments
 
 # Used for decoding the route list json file
 def as_route_list(json):
@@ -420,20 +392,8 @@ def read_ssl_keys(fname):
   return fromkeys(ssl_keys, ssl_values)
 
 def read_train_assets(base_url):
-  done = False
-  readings = []
-  url = base_url
-  while not done:
-    f = urlopen(url)
-    data = jsonload(f)
-    readings += as_train_readings(data)
-    print "token:        " + str(data.get("nextPageToken"))
-    if "nextPageToken" in data:
-      url = base_url + "&nextPageToken=" + \
-        data["nextPageToken"]
-    else:
-      done = True
-  return readings
+  pass
+
 
 def main():
   # --- OPEN DATABASE ---
@@ -452,35 +412,54 @@ def main():
     read_default_file = environ.get('DB_OPTION_FILE') or "", \
     ssl = read_ssl_keys(environ.get('DB_SSL_FILE')) \
     )
-  # --- CREATE TABLE ---
-  cur = db.cursor()
-  TrainReading.initializeTable(cur)
+  # --- CREATE TABLES ---
+  # Used to prevent attempts to create pre-existing tables
+  existing = MySQLObject.getExistingTables(db)
+  print(existing)
+  Route().initialize(db, existing)
+  Segment().initialize(db, existing)
+  Train().initialize(db, existing)
+  TrainReading().initialize(db, existing)
+  TrainStop().initialize(db, existing)
+  Station().initialize(db, existing)
   
   # --- ACCESS NEAR STATIC INFORMATION ---
-  # Contains CMS information for accessing train routes
+  # Contains a list of train routes
   # Generally at http://www.amtrak.com/rttl/js/RoutesList.json
-  route_list = None
-  f = urlopen(environ.get('TRAIN_ROUTE_LIST_URI'))
-  route_list = jsonload(f)
+  # Note: RoutesList.json isn't really helpful so I won't download it
+  #f = urlopen(environ.get('TRAIN_ROUTE_LIST_URI'))
   
   # Contains geometry for train routes
   # Generally at http://www.amtrak.com/rttl/js/route_properties.json
-  route_paths = None
-  f = urlopen(environ.get('TRAIN_ROUTE_PROPERTY_URI'))
-  route_paths = jsonload(f)
+  route_pages = decode_routes_page(environ.get('TRAIN_ROUTE_PROPERTY_URI'))
   
-  # TODO: gain access to the train data directly instead of from a hack
+  
+  # TODO: Wishlist, gain access to the train data directly instead of from a hack
+  
+  # --- Configure Polling Rates ---
+  poll_cycle_text = environ.get("POLL_CYCLE")
+  station_poll_cycle_text = environ.get("STATION_POLL_CYCLE")
+  
+  if poll_cycle_text:
+    poll_cycle = int(poll_cycle_text)
+  else:
+    # Updates every 5 minutes
+    poll_cycle = 60 * 5
+  
+  if station_poll_cycle_text:
+    station_poll_cycle = int(station_poll_cycle_text)
+  else:
+    # Updates the station list daily
+    station_poll_cycle = 24 * 60 / poll_cycle
   
   # --- POLL HIGHLY DYNAMIC INFORMATION ---
   running = True
-  train_asset_url = "https://www.googleapis.com/mapsengine/v1/tables/" + \
-    environ.get("GOOGLE_ENGINE_TRAINS_ASSET_ID") + \
-    "/features?version=published&key=" + \
-    environ.get("GOOGLE_ENGINE_KEY")# + \
-#    "&select=geometry," + \
-#    ','.join(TrainReading.Fields[2, len(TrainReading.Fields)])
   start_time = 0.0
+  count = 0
   while running:
+    if count == 0:
+      stations = decode_stations_asset( \
+        environ.get("GOOGLE_ENGINE_STATIONS_ASSET_ID"))
     # Time in seconds since the epoch
     current_time = time()
     # Number of seconds the previous run-through required
@@ -488,16 +467,15 @@ def main():
     start_time = current_time
     # If the time reset, just immediately request
     if time_diff < 0:
-      time_diff = trainDelaySecs
-    if time_diff < trainDelaySecs:
-      print "sleep:        " + str(trainDelaySecs - time_diff)
-      sleep(trainDelaySecs - time_diff)
+      time_diff = poll_cycle
+    if time_diff < poll_cycle:
+      print "sleep:        " + str(poll_cycle - time_diff)
+      sleep(poll_cycle - time_diff)
     # Record the start time
     start_time = time()
     # Read train assets
-    trains = read_train_assets(train_asset_url)
-    print "Num trains:     " + str(len(trains))
-    TrainReading.recordList(cur, trains)
+    train_pages = decode_trains_asset(environ.get("GOOGLE_ENGINE_TRAINS_ASSET_ID"))
+    count = (count + 1) % station_poll_cycle
     db.commit()
 
 if __name__ == '__main__':
