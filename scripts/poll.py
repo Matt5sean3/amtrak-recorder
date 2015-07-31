@@ -23,7 +23,7 @@ from MySQLdb import connect
 # Needs to close gracefully with SIGINT
 import signal
 
-from json import load as jsonload, dumps as jsonsaves
+from json import load as jsonload, loads as jsonloads, dumps as jsonsaves
 
 
 class MySQLObject(object):
@@ -284,22 +284,91 @@ class TrainReading(MySQLObject):
     "Longitude DOUBLE", \
     "Time DATETIME", \
     "Speed DOUBLE", \
-    "Heading ENUM('N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW')", \
-    "State ENUM('Predeparture', 'Active', 'Completed')" \
+    "Heading ENUM('', 'N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW')", \
+    "State ENUM('', 'Predeparture', 'Active', 'Completed')" \
     ]
+  def __init__(self, \
+      trainnum = 0, \
+      lonlat = [0.0, 0.0], \
+      time = datetime('1900', '1', '1'), \
+      speed = 0.0, \
+      heading = '', \
+      state = '' \
+      ):
+    self.data["TrainNum"] = trainnum
+    self.data["Longitude"] = lonlat[0]
+    self.data["Latitude"] = lonlat[1]
+    self.data["Time"] = time
+    self.data["Speed"] = speed
+    self.data["Heading"] = heading
+    self.data["State"] = state
+    super(TrainReading, self).__init__()
 
 class TrainStop(MySQLObject):
   TableName = "stops"
   Fields = [ \
     "StationCode", \
     "TrainNum", \
-    "OrigSchDep" \
+    "ScheduledDeparture" \
+    "ScheduledArrival" \
     ]
   FieldDefinition = [ \
     "StationCode CHAR(3)", \
     "TrainNum INT", \
-    "OrigSchDep DATETIME" \
+    "ScheduledDeparture DATETIME" \
+    "ScheduledArrival DATETIME" \
     ]
+  def __init__(self, \
+      stationcode = '', \
+      trainnum = 0, \
+      departure = datetime('1900', '1', '1'), \
+      arrival = datetime('1900', '1', '1') \
+      ):
+    self.data["StationCode"] = stationcode
+    self.data["TrainNum"] = trainnum
+    self.data["ScheduledDeparture"] = departure
+    self.data["ScheduledArrival"] = arrival
+    super(TrainStop, self).__init__()
+
+class TrainArrival(MySQLObject):
+  TableName = "arrivals"
+  Fields = [ \
+    "TrainNum", \
+    "StationCode", \
+    "Time"]
+  FieldDefinition = [ \
+    "TrainNum INT", \
+    "StationCode CHAR(3)", \
+    "Time DATETIME"]
+  def __init__(self, \
+      trainnum = 0, \
+      stationcode = '', \
+      time = datetime('1900', '1', '1'), \
+      ):
+    self.data["TrainNum"] = trainnum
+    self.data["StationCode"] = stationcode
+    self.data["Time"] = time
+    super(TrainDeparture, self).__init__()
+
+class TrainDeparture(MySQLObject):
+  TableName = "departures"
+  Fields = [ \
+    "TrainNum", \
+    "StationCode", \
+    "Time"]
+  FieldDefinition = [ \
+    "TrainNum INT", \
+    "StationCode CHAR(3)", \
+    "Time DATETIME"]
+  def __init__(self, \
+      trainnum = 0, \
+      stationcode = '', \
+      time = datetime('1900', '1', '1'), \
+      ):
+    self.data["TrainNum"] = trainnum
+    self.data["StationCode"] = stationcode
+    self.data["Time"] = time
+    super(TrainDeparture, self).__init__()
 
 class Station(MySQLObject):
   TableName = "stations"
@@ -388,8 +457,13 @@ def readGoogleEngineAsset(asset_id):
     pages.append(data)
   return pages
 
+# Used in time stamps
 def parseAmtrakDateTime(s):
   return datetime.strptime(s, "%m/%d/%Y %I:%M:%S %p")
+
+# Used in station schedules
+def parseAmtrakDateTime2(s):
+  return datetime.strptime(s, "%d/%m/%Y %H:%M:%S")
 
 def decode_routes_page(uri):
   f = urlopen(uri);
@@ -399,8 +473,28 @@ def decode_routes_page(uri):
 def decode_trains_asset(asset_id):
   print "=== TRAIN ASSETS ==="
   pages = readGoogleEngineAsset(asset_id)
+  readings = MySQLObjectGroup(TrainReading())
+  stops = MySQLObjectGroup(TrainStop())
+  arrivals = MySQLObjectGroup(TrainArrival())
+  departures = MySQLObjectGroup(TrainDeparture())
   for page in pages:
-    pass
+    for feature in page.get("features"):
+      geom = feature.get("geometry");
+      properties = feature.get("properties");
+      readings.add(TrainReading( \
+        trainnum = properties.get("TrainNum"), \
+        lonlat = feature.get("geometry"), \
+        time = parseAmtrakDateTime(properties.get("LastValTS"))), \
+        speed = properties.get("Velocity"), \
+        heading = properties.get("Heading"), \
+        state = properties.get("TrainState") \
+        ))
+      count = 1
+      while ("Station" + str(count)) in properties:
+        stopinfo = jsonloads(properties.get("Station"))
+        stops.add(TrainStop())
+        count += 1
+      
   return pages
 
 def decode_stations_asset(asset_id):
