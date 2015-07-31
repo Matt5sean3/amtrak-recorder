@@ -33,19 +33,44 @@ class MySQLObject(object):
   FieldDefault = {}
   WriteFields = None
   ReadFields = None
+  Identity = None
+  Keys = None
   data = {}
   def __init__(self):
     if not self.WriteFields:
       self.WriteFields = self.Fields
     if not self.ReadFields:
       self.ReadFields = self.Fields
+    if not self.Identity:
+      self.Identity = self.Fields
+    if not self.Keys:
+      self.Keys = self.Fields
+  
+  def __eq__(self, other):
+    # Should efficiently cover most cases
+    if hash(self) != hash(other):
+      return False
+    # Checks exceptional cases
+    for key in self.Identity:
+      if self.data.get(key) != other.data.get(key):
+        return False
+    return True
+        
+  def __hash__(self):
+    ax = 0
+    for key in self.Identity:
+      ax += hash(self.data[key])
+    return ax
+  
   def subList(self, num):
     return ", ".join(["%s"] * num)
+  
   def getDataList(self, names):
     ret = []
     for name in names:
       ret.append(self.data.get(name))
     return ret
+  
   def initialize(self, db, existing):
     if self.TableName in existing:
       return
@@ -61,12 +86,14 @@ class MySQLObject(object):
       " (" + ", ".join(self.FieldDefinition) + ");")
     cur.close()
     db.commit()
+  
   def destroy(self, db):
     cur = db.cursor()
     cur.execute( \
       "DROP TABLE %s", (self.TableName,))
     cur.close()
     db.commit()
+  
   def write(self, db):
     cur = db.cursor()
     slots = self.subList(len(self.WriteFields))
@@ -80,6 +107,7 @@ class MySQLObject(object):
       )
     cur.close()
     db.commit()
+  
   def copy(self):
     # Note: copy just creates a MySQLObject
     # if the object needs to be used as more than just a MySQLObject
@@ -91,7 +119,10 @@ class MySQLObject(object):
     dup.FieldDefault = self.FieldDefault
     dup.WriteFields = self.WriteFields
     dup.ReadFields = self.ReadFields
+    dup.Keys = self.Keys
+    dup.Identity = self.Identity
     dup.data = self.data.copy()
+    return dup
   def writeStream(self, f):
     # Writes the data to a file-like object
     # as a JSON dict
@@ -106,47 +137,80 @@ class MySQLObject(object):
     cur.close()
     return tables
 
-class MySQLObjectGroup(list):
+# Order should not matter
+# Of greater importance than order is to check membership
+class MySQLObjectGroup(set):
   base = None
-  def __init__(self, b):
-    base = b
-    super(MySQLObjectGroup, self).__init__()
+  def __init__(self, b, s = set()):
+    self.base = b
+    super(MySQLObjectGroup, self).__init__(s)
+
+  def union(self, other):
+    return MySQLObjectGroup(self.base, 
+      super(MySQLObjectGroup, self).union(other))
+
+  def __or__(self, other):
+    return MySQLObjectGroup(self.base, 
+      super(MySQLObjectGroup, self).__or__(other))
+  
+  def intersection(self, other):
+    return MySQLObjectGroup(self.base, 
+      super(MySQLObjectGroup, self).intersection(other))
+  
+  def __and__(self, other):
+    return MySQLObjectGroup(self.base, 
+      super(MySQLObjectGroup, self).__and__(other))
+
+  def difference(self, other):
+    return MySQLObjectGroup(self.base, 
+      super(MySQLObjectGroup, self).difference(other))
+
+  def __sub__(self, other):
+    return MySQLObjectGroup(self.base, 
+      super(MySQLObjectGroup, self).__sub__(other))
+
+  def symmetric_difference(self, other):
+    return MySQLObjectGroup(self.base, 
+      super(MySQLObjectGroup, self).symmetric_difference(other))
+
+  def __xor__(self, other):
+    return MySQLObjectGroup(self.base, 
+      super(MySQLObjectGroup, self).__xor__(other))
+
   def write(self, db):
     cur = db.cursor()
-    slots = base.subList(len(base.WriteFields))
-    rep = [base.TableName]
-    rep.extend(base.WriteFields)
-    for entry in entries:
-      rep.extend(entry.data)
+    slots = self.base.subList(len(self.base.WriteFields))
+    rep = []
+    for entry in self:
+      ordered = []
+      for key in self.base.WriteFields:
+        ordered.append(entry.data[key])
+      rep.extend(ordered)
     cur.execute( \
-      "INSERT INTO %s (" + slots + ") VALUES " + \
-      ", ".join(["(" + slots + ")"] * self.size()) + \
+      "INSERT INTO " + self.base.TableName + " (" + \
+      ", ".join(self.base.WriteFields) + ") VALUES " + \
+      ", ".join(["(" + slots + ")"] * len(self)) + \
       ";", rep);
     cur.close()
     db.commit()
   def read(self, db):
     # Appends the results to the end of the existing list
     cur = db.cursor()
-    rep = []
-    rep.extend(base.ReadFields)
-    rep.extend(base.TableName)
     cur.execute( \
-      "SELECT " + ", ".join(["%s"] * len(base.ReadFields)) + \
-      " FROM %s;", rep)
+      "SELECT " + ", ".join(self.base.ReadFields) + \
+      " FROM " + self.base.TableName + ";")
     for fetch in cur:
-      entry = base.copy()
-      idx = 0
-      for field in ReadFields:
-        entry.data[field] = entry[idx]
-        idx += 1
-      entries.append(entry)
+      entry = self.base.copy()
+      for idx, field in enumerate(self.base.ReadFields):
+        entry.data[field] = fetch[idx]
+      self.add(entry)
     cur.close()
-    def writeStream(self, f):
-      # Writes the group of objects as JSON objects
-      justdata = []
-      for entry in entries:
-        justdata.append(entry.data)
-      return jsonsaves(justdata)
+  def writeStream(self, f):
+    # Writes the group of objects as JSON objects
+    justdata = []
+    for entry in self:
+      justdata.append(entry.data)
+    return jsonsaves(justdata)
 
 class Route(MySQLObject):
   TableName = "routes"
@@ -192,25 +256,22 @@ class Segment(MySQLObject):
 class Train(MySQLObject):
   TableName = "trains"
   Fields = [ \
-    "ID", \
     "TrainNum", \
     "RouteID", \
     "OrigStationCode", \
     "DestStationCode" \
     ]
   FieldDefinition = [ \
-    "ID INT", \
-    "TrainNum INT", \
+    "TrainNum INT PRIMARY KEY", \
     "RouteID INT", \
     "OrigStationCode CHAR(3)", \
-    "DestStationCode CHAR(3)", \
-    "PRIMARY KEY(ID)" \
+    "DestStationCode CHAR(3)" \
     ]
 
 class TrainReading(MySQLObject):
   TableName = "readings"
   Fields = [ \
-    "TrainID", \
+    "TrainNum", \
     "Latitude", \
     "Longitude", \
     "Time", \
@@ -218,7 +279,7 @@ class TrainReading(MySQLObject):
     "Heading", \
     "State"]
   FieldDefinition = [
-    "TrainID INT", \
+    "TrainNum INT", \
     "Latitude DOUBLE", \
     "Longitude DOUBLE", \
     "Time DATETIME", \
@@ -231,12 +292,12 @@ class TrainStop(MySQLObject):
   TableName = "stops"
   Fields = [ \
     "StationCode", \
-    "TrainID", \
+    "TrainNum", \
     "OrigSchDep" \
     ]
   FieldDefinition = [ \
     "StationCode CHAR(3)", \
-    "TrainID INT", \
+    "TrainNum INT", \
     "OrigSchDep DATETIME" \
     ]
 
@@ -255,6 +316,7 @@ class Station(MySQLObject):
     "Type", \
     "DateModif" \
     ]
+  # Interesting note, Canadian ZipCodes are non-numeric
   FieldDefinition = [ \
     "Code CHAR(3) PRIMARY KEY", \
     "Name TEXT", \
@@ -266,14 +328,23 @@ class Station(MySQLObject):
                "'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD'," + \
                "'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ'," + \
                "'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC'," + \
-               "'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY', '')", \
-    "ZipCode INT", \
+               "'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY'," + \
+               "'DC', 'AB', 'BC', 'ON', 'QC', '')", \
+    "ZipCode CHAR(7)", \
     "IsTrainSt BOOLEAN", \
     "Type ENUM('', 'Platform only (no shelter)', 'Platform with Shelter', 'Station Building (with waiting room)')", \
     "DateModif DATETIME" \
     ]
+  Key = [
+    "Code"
+    ]
+  Identity = [
+    "Code",
+    "DateModif"
+    ]
   def __init__(self, \
       code = "\0\0\0", 
+      name = "",
       lonlat = (0.0, 0.0), 
       address = "", 
       city = "",
@@ -282,10 +353,12 @@ class Station(MySQLObject):
       isTrainStation = False,
       stationType = '',
       modified = datetime(1900, 1, 1)):
+    super(Station, self).__init__()
     self.data = {}
-    self.data["Code"] = code;
-    self.data["Longitude"] = lonlat[0];
-    self.data["Latitude"] = lonlat[1];
+    self.data["Code"] = code
+    self.data["Name"] = name
+    self.data["Longitude"] = lonlat[0]
+    self.data["Latitude"] = lonlat[1]
     self.data["Address"] = address
     self.data["City"] = city
     self.data["State"] = state
@@ -341,17 +414,19 @@ def decode_stations_asset(asset_id):
       point = geom.get("coordinates")
       properties = feature.get("properties")
       # Needs to convert datetime
-      stations.append(Station( \
+      stations.add(Station( \
         properties.get("Code"), \
+        properties.get("Name"),
         geom.get("coordinates"), \
         properties.get("Address1"), \
         properties.get("City"), \
         properties.get("State"), \
-        properties.get("ZipCode"), \
+        properties.get("Zipcode"), \
         properties.get("IsTrainSt") == 'Y', \
         properties.get("StaType"), \
         parseAmtrakDateTime(properties.get("DateModif")) \
         ))
+  # Check the existing codes
   return stations
 
 # within 0.005 degrees latitude/longitude (~500 meters) are the same position
@@ -460,6 +535,12 @@ def main():
     if count == 0:
       stations = decode_stations_asset( \
         environ.get("GOOGLE_ENGINE_STATIONS_ASSET_ID"))
+      oldstations = MySQLObjectGroup(Station())
+      oldstations.read(db)
+      newstations = stations - oldstations
+      print(newstations)
+      if len(newstations):
+        newstations.write(db)
     # Time in seconds since the epoch
     current_time = time()
     # Number of seconds the previous run-through required
