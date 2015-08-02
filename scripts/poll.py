@@ -269,6 +269,10 @@ class Train(MySQLObject):
     "DestStation CHAR(3)", \
     "CONSTRAINT NumRoute PRIMARY KEY (TrainNum, RouteName)"
     ]
+  Identity = [ \
+    "TrainNum", \
+    "RouteName" \
+    ]
   def __init__(self, \
       trainnum = 0, \
       routename = "", \
@@ -499,7 +503,7 @@ def decode_trains_asset(asset_id):
     for feature in page.get("features"):
       geom = feature.get("geometry");
       properties = feature.get("properties");
-      codes = [properties.get("TrainNum")]
+      codes = [int(properties.get("TrainNum"))]
       aliases = properties.get("Aliases")
       if aliases != "":
         for alias in aliases.split(","):
@@ -555,11 +559,11 @@ def decode_trains_asset(asset_id):
                 t \
                 ))
         count += 1
-  return {"trains": trains, \
-          "readings" : readings, \
-          "stops": stops, \
-          "arrivals": arrivals, \
-          "departures": departures, \
+  return {Train(): trains, \
+          TrainReading(): readings, \
+          TrainStop(): stops, \
+          TrainArrival(): arrivals, \
+          TrainDeparture(): departures, \
          }
 
 def decode_stations_asset(asset_id):
@@ -716,9 +720,12 @@ def main():
     start_time = time()
     # Read train assets
     train_data = decode_trains_asset(environ.get("GOOGLE_ENGINE_TRAINS_ASSET_ID"))
+    print("\n".join(str(entry.data) for entry in train_data[Train()]))
     for key, entry in train_data.iteritems():
-      print(key)
-      entry.write(db)
+      oldentry = MySQLObjectGroup(key)
+      oldentry.read(db)
+      newentry = entry - oldentry
+      newentry.write(db)
     count = (count + 1) % station_poll_cycle
     db.commit()
 
