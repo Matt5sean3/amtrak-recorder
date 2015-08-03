@@ -8,7 +8,7 @@
 # Used to delay updates
 from time import sleep
 from time import time
-from datetime import datetime
+from datetime import datetime, date, time as daytime, timedelta
 
 # Used to poll the data files
 from urllib2 import urlopen
@@ -179,7 +179,6 @@ class MySQLObjectGroup(set):
       super(MySQLObjectGroup, self).__xor__(other))
 
   def write(self, db):
-    cur = db.cursor()
     slots = self.base.subList(len(self.base.WriteFields))
     rep = []
     for entry in self:
@@ -187,13 +186,15 @@ class MySQLObjectGroup(set):
       for key in self.base.WriteFields:
         ordered.append(entry.data[key])
       rep.extend(ordered)
-    cur.execute( \
-      "INSERT INTO " + self.base.TableName + " (" + \
-      ", ".join(self.base.WriteFields) + ") VALUES " + \
-      ", ".join(["(" + slots + ")"] * len(self)) + \
-      ";", rep);
-    cur.close()
-    db.commit()
+    if len(self):
+      cur = db.cursor()
+      cur.execute( \
+        "INSERT INTO " + self.base.TableName + " (" + \
+        ", ".join(self.base.WriteFields) + ") VALUES " + \
+        ", ".join(["(" + slots + ")"] * len(self)) + \
+        ";", rep);
+      cur.close()
+      db.commit()
   def read(self, db):
     # Appends the results to the end of the existing list
     cur = db.cursor()
@@ -259,29 +260,34 @@ class Train(MySQLObject):
   Fields = [ \
     "TrainNum", \
     "RouteName", \
+    "OrigTime", \
     "OrigStation", \
     "DestStation" \
     ]
   FieldDefinition = [ \
     "TrainNum INT", \
     "RouteName VARCHAR(255)", \
+    "OrigTime DATETIME", \
     "OrigStation CHAR(3)", \
     "DestStation CHAR(3)", \
-    "CONSTRAINT NumRoute PRIMARY KEY (TrainNum, RouteName)"
+    "CONSTRAINT NumRoute PRIMARY KEY (TrainNum, RouteName, OrigTime)"
     ]
   Identity = [ \
     "TrainNum", \
-    "RouteName" \
+    "RouteName", \
+    "OrigTime" \
     ]
   def __init__(self, \
       trainnum = 0, \
       routename = "", \
+      originTime = None, \
       origin = "", \
       destination = "" \
       ):
     super(Train, self).__init__()
     self.data["TrainNum"] = trainnum
     self.data["RouteName"] = routename
+    self.data["OrigTime"] = originTime
     self.data["OrigStation"] = origin
     self.data["DestStation"] = destination
 
@@ -477,13 +483,66 @@ def readGoogleEngineAsset(asset_id):
     pages.append(data)
   return pages
 
+# Takes a bit of work to 
+
+# Creates a datetime.date object with the Nth occurence of a given weekday
+def findWeekdayInMonth(weekday, week, month, year):
+  # The day must be in this range
+  r = range((week - 1) * 7 + 1, week * 7 + 1)
+  for day in r:
+    aDay = date(year, month, day)
+    if aDay.isoweekday() == weekday:
+      return aDay
+
+def daylightSavingInEffect(dt):
+  # DLST starts second Sunday in March at 2 AM
+  dlstStartDate = findWeekdayInMonth( \
+    int(environ.get("DLST_START_WEEKDAY") or 7), \
+    int(environ.get("DLST_START_WEEK") or 2), \
+    int(environ.get("DLST_START_MONTH") or 3), \
+    dt.year)
+  dlstStartTime = daytime( \
+    int(environ.get("DLST_START_HOUR") or 2), \
+    int(environ.get("DLST_START_MINUTE") or 0))
+  dlstStartDateTime = datetime.combine(dlstStartDate, dlstStartTime)
+  
+  # DLST ends first Sunday in November at 2 AM
+  dlstEndDate = findWeekdayInMonth( \
+    int(environ.get("DLST_END_WEEKDAY") or 7), \
+    int(environ.get("DLST_END_WEEK") or 1), \
+    int(environ.get("DLST_END_MONTH") or 11), \
+    dt.year)
+  dlstEndTime = daytime( \
+    int(environ.get("DLST_END_HOUR") or 2),
+    int(environ.get("DLST_END_MINUTE") or 0))
+  dlstEndDateTime = datetime.combine(dlstEndDate, dlstEndTime)
+  return dt > dlstStartDateTime and dt < dlstEndDateTime
+
+def adjustToUTC(dt, tz):
+  dt2 = dt
+  # UTC never experiences daylightSavingTime
+  if tz != 'U' and daylightSavingInEffect(dt):
+    # Brings in line with standard time instead of daylight time
+    dt2 = dt + timedelta(hours = -1)
+  tzMap = { \
+    'U': timedelta(hours = 0), \
+    'E': timedelta(hours = -5), \
+    'C': timedelta(hours = -6), \
+    'M': timedelta(hours = -7), \
+    'P': timedelta(hours = -8), \
+    }
+  return dt2 - tzMap[tz]
+
 # Used in time stamps
-def parseAmtrakDateTime(s):
-  return datetime.strptime(s, "%m/%d/%Y %I:%M:%S %p")
+def parseAmtrakDateTime(s, tz):
+  # Account for timezones
+  return adjustToUTC(datetime.strptime(s, "%m/%d/%Y %I:%M:%S %p"), tz)
 
 # Used in station schedules
-def parseAmtrakDateTime2(s):
-  return datetime.strptime(s, "%m/%d/%Y %H:%M:%S")
+def parseAmtrakDateTime2(s, tz):
+  # Need to sort things out with the daylight savings time 
+  # plus the associated Arizona problem
+  return adjustToUTC(datetime.strptime(s, "%m/%d/%Y %H:%M:%S"), tz)
 
 def decode_routes_page(uri):
   f = urlopen(uri);
@@ -492,6 +551,7 @@ def decode_routes_page(uri):
 
 def decode_trains_asset(asset_id):
   print "=== TRAIN ASSETS ==="
+  # TODO, not very robust if certain pieces of data are missing
   pages = readGoogleEngineAsset(asset_id)
   trains = MySQLObjectGroup(Train())
   readings = MySQLObjectGroup(TrainReading())
@@ -512,7 +572,8 @@ def decode_trains_asset(asset_id):
         reading = TrainReading( \
           trainnum = code, \
           lonlat = geom.get("coordinates"), \
-          time = parseAmtrakDateTime(properties.get("LastValTS")), \
+          time = parseAmtrakDateTime(properties.get("LastValTS"), \
+            properties.get("EventTZ") or properties.get("OriginTZ")), \
           speed = properties.get("Velocity"), \
           heading = properties.get("Heading"), \
           state = properties.get("TrainState"), \
@@ -523,6 +584,8 @@ def decode_trains_asset(asset_id):
           trains.add(Train( \
             code, \
             route, \
+            parseAmtrakDateTime(properties.get("OrigSchDep"),
+              properties.get("OriginTZ")), \
             properties.get("OrigCode"), \
             properties.get("DestCode") \
             ))
@@ -532,16 +595,21 @@ def decode_trains_asset(asset_id):
         station = stopinfo.get("code")
         deptext = stopinfo.get("schdep")
         arrtext = stopinfo.get("scharr")
+        arrtime = arrtext and parseAmtrakDateTime2(arrtext,
+          stopinfo.get("tz"))
+        deptime = deptext and parseAmtrakDateTime2(deptext,
+          stopinfo.get("tz"))
         for code in codes:
           # Be aware of the use of boolean short-circuiting here
           stops.add(TrainStop( \
             station, \
             code, \
-            arrtext and parseAmtrakDateTime2(arrtext), \
-            deptext and parseAmtrakDateTime2(deptext) \
+            arrtime, \
+            deptime \
             ))
         if "postdep" in stopinfo:
-          t = parseAmtrakDateTime2(stopinfo.get("postdep"))
+          t = parseAmtrakDateTime2(stopinfo.get("postdep"),
+            stopinfo.get("tz"))
           for code in codes:
             departures.add( \
               TrainDeparture( \
@@ -550,7 +618,8 @@ def decode_trains_asset(asset_id):
                 t \
                 ))
         if "postarr" in stopinfo:
-          t = parseAmtrakDateTime2(stopinfo.get("postarr"))
+          t = parseAmtrakDateTime2(stopinfo.get("postarr"),
+            stopinfo.get("tz"))
           for code in codes:
             arrivals.add( \
               TrainArrival(
@@ -576,6 +645,10 @@ def decode_stations_asset(asset_id):
       geom = feature.get("geometry")
       properties = feature.get("properties")
       # Needs to convert datetime
+      # An issue is that I can't tell what timezone
+      # those modifications are time stamped in
+      # TODO: stop assuming UTC timezone for this case
+      # TODO: find the method of finding the correct timezone
       stations.add(Station( \
         properties.get("Code"), \
         properties.get("Name"),
@@ -586,7 +659,8 @@ def decode_stations_asset(asset_id):
         properties.get("Zipcode"), \
         properties.get("IsTrainSt") == 'Y', \
         properties.get("StaType"), \
-        parseAmtrakDateTime(properties.get("DateModif")) \
+        parseAmtrakDateTime(properties.get("DateModif"), \
+          'U') \
         ))
   # Check the existing codes
   return stations
@@ -702,7 +776,7 @@ def main():
       oldstations = MySQLObjectGroup(Station())
       oldstations.read(db)
       newstations = stations - oldstations
-      print(newstations)
+      print("\n".join(str(station) for station in newstations))
       if len(newstations):
         newstations.write(db)
     # Time in seconds since the epoch
@@ -720,11 +794,12 @@ def main():
     start_time = time()
     # Read train assets
     train_data = decode_trains_asset(environ.get("GOOGLE_ENGINE_TRAINS_ASSET_ID"))
-    print("\n".join(str(entry.data) for entry in train_data[Train()]))
     for key, entry in train_data.iteritems():
       oldentry = MySQLObjectGroup(key)
       oldentry.read(db)
       newentry = entry - oldentry
+      if key.TableName == "trains":
+        print("\n".join(str(entry.data) for entry in newentry))
       newentry.write(db)
     count = (count + 1) % station_poll_cycle
     db.commit()
