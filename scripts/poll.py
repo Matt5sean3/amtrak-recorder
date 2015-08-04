@@ -475,6 +475,7 @@ def readGoogleEngineAsset(asset_id):
   while not done:
     f = urlopen(url)
     data = jsonload(f)
+    close(f)
     if "nextPageToken" in data:
       url = asset_url + "&pageToken=" + \
         str(data["nextPageToken"])
@@ -547,6 +548,7 @@ def parseAmtrakDateTime2(s, tz):
 def decode_routes_page(uri):
   f = urlopen(uri);
   page = jsonload(f)
+  close(f)
   return [page]
 
 def decode_trains_asset(asset_id):
