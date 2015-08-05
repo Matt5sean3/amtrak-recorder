@@ -25,6 +25,24 @@
       </path>
     </interpreter>
   </node>
+  <node name="analyze_data" xsi:type="script_t">
+    <path absolute="false" os="linux">
+      <directory>scripts</directory>
+      <directory>analysis.R</directory>
+    </path>
+    <!--<env key="HOME" value="@HOME_DIRECTORY@" />-->
+    <env key="DB_HOST" value="localhost" />
+    <env key="DB_USER" value="trains" />
+    <env key="DB_PASSWD" value="train spotter" />
+    <env key="DB_NAME" value="train_database" />
+    <interpreter name="R_interpreter">
+      <path absolute="true" os="linux">
+        <directory>usr</directory>
+        <directory>bin</directory>
+        <directory>Rscript</directory>
+      </path>
+    </interpreter>
+  </node>
   <externalize node="poll_data" internal="0" external="0" />
   <externalize node="poll_data" internal="1" external="1" />
   <externalize node="poll_data" internal="2" external="2" />

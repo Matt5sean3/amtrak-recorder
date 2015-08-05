@@ -3,5 +3,6 @@ project(train_alarm)
 
 find_package(arclaunch REQUIRED)
 
+set(HOME_DIRECTORY "$ENV{HOME}")
 configure_file(xml/launch.xml.in ${CMAKE_CURRENT_BINARY_DIR}/xml/launch.xml)
 

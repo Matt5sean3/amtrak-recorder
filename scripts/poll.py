@@ -270,11 +270,10 @@ class Train(MySQLObject):
     "OrigTime DATETIME", \
     "OrigStation CHAR(3)", \
     "DestStation CHAR(3)", \
-    "CONSTRAINT NumRoute PRIMARY KEY (TrainNum, RouteName, OrigTime)"
+    "CONSTRAINT NumRoute PRIMARY KEY (TrainNum, OrigTime)"
     ]
   Identity = [ \
     "TrainNum", \
-    "RouteName", \
     "OrigTime" \
     ]
   def __init__(self, \
@@ -300,8 +299,7 @@ class TrainReading(MySQLObject):
     "Time", \
     "Speed", \
     "Heading", \
-    "State", 
-    "Aliases"]
+    "State"]
   FieldDefinition = [
     "TrainNum INT", \
     "Latitude DOUBLE", \
@@ -309,8 +307,7 @@ class TrainReading(MySQLObject):
     "Time DATETIME", \
     "Speed DOUBLE", \
     "Heading ENUM('', 'N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW')", \
-    "State ENUM('', 'Predeparture', 'Active', 'Completed')", \
-    "Aliases TEXT" \
+    "State ENUM('', 'Predeparture', 'Active', 'Completed')" \
     ]
   def __init__(self, \
       trainnum = 0, \
@@ -319,7 +316,6 @@ class TrainReading(MySQLObject):
       speed = 0.0, \
       heading = '', \
       state = '', \
-      aliases = '' \
       ):
     super(TrainReading, self).__init__()
     self.data["TrainNum"] = trainnum
@@ -329,7 +325,6 @@ class TrainReading(MySQLObject):
     self.data["Speed"] = speed
     self.data["Heading"] = heading
     self.data["State"] = state
-    self.data["Aliases"] = aliases
 
 class TrainStop(MySQLObject):
   TableName = "stops"
@@ -462,6 +457,28 @@ class Station(MySQLObject):
     self.data["Type"] = stationType
     self.data["DateModif"] = modified
 
+# I've seperated out aliases because things get nonsensical
+# and inefficient if I don't
+class Alias(MySQLObject):
+  TableName = "aliases"
+  Fields = [ \
+    "TrainNum", \
+    "OrigTime", \
+    "Alias" \
+    ]
+  FieldDefinition = [ \
+    "TrainNum INT", \
+    "OrigTime DATETIME", \
+    "Alias INT", \
+    ]
+  def __init__(self, \
+      num = 0,
+      time = datetime(1900, 1, 1),
+      alias = 0):
+    super(Alias, self).__init__()
+    self.data["TrainNum"] = num
+    self.data["OrigTime"] = time
+    self.data["Alias"] = alias
 
 def readGoogleEngineAsset(asset_id):
   asset_url = "https://www.googleapis.com/mapsengine/v1/tables/" + \
@@ -475,7 +492,7 @@ def readGoogleEngineAsset(asset_id):
   while not done:
     f = urlopen(url)
     data = jsonload(f)
-    close(f)
+    f.close()
     if "nextPageToken" in data:
       url = asset_url + "&pageToken=" + \
         str(data["nextPageToken"])
@@ -548,7 +565,7 @@ def parseAmtrakDateTime2(s, tz):
 def decode_routes_page(uri):
   f = urlopen(uri);
   page = jsonload(f)
-  close(f)
+  f.close()
   return [page]
 
 def decode_trains_asset(asset_id):
@@ -560,37 +577,37 @@ def decode_trains_asset(asset_id):
   stops = MySQLObjectGroup(TrainStop())
   arrivals = MySQLObjectGroup(TrainArrival())
   departures = MySQLObjectGroup(TrainDeparture())
+  aliases = MySQLObjectGroup(Alias())
   for page in pages:
     # Aliasing of train numbers throws a major wrench into this
     for feature in page.get("features"):
       geom = feature.get("geometry");
       properties = feature.get("properties");
-      codes = [int(properties.get("TrainNum"))]
-      aliases = properties.get("Aliases")
-      if aliases != "":
-        for alias in aliases.split(","):
-          codes.append(int(alias))
-      for code in codes:
-        reading = TrainReading( \
-          trainnum = code, \
-          lonlat = geom.get("coordinates"), \
-          time = parseAmtrakDateTime(properties.get("LastValTS"), \
-            properties.get("EventTZ") or properties.get("OriginTZ")), \
-          speed = properties.get("Velocity"), \
-          heading = properties.get("Heading"), \
-          state = properties.get("TrainState"), \
-          aliases = ",".join(str(code) for code in codes), \
-          )
-        readings.add(reading)
-        for route in properties.get("RouteName").split(" / "):
-          trains.add(Train( \
-            code, \
-            route, \
-            parseAmtrakDateTime(properties.get("OrigSchDep"),
-              properties.get("OriginTZ")), \
-            properties.get("OrigCode"), \
-            properties.get("DestCode") \
-            ))
+      code = int(properties.get("TrainNum"))
+      aliasString = properties.get("Aliases")
+      aliasNums = None
+      origT = parseAmtrakDateTime(properties.get("OrigSchDep"),
+          properties.get("OriginTZ"))
+      if aliasString != "":
+        aliasNums = (aliases.add(Alias(code, origT, int(alias))) for alias in \
+          aliasString.split(","))
+      trains.add(Train( \
+        code, \
+        properties.get("RouteName"), \
+        origT, \
+        properties.get("OrigCode"), \
+        properties.get("DestCode") \
+        ))
+      reading = TrainReading( \
+        trainnum = code, \
+        lonlat = geom.get("coordinates"), \
+        time = parseAmtrakDateTime(properties.get("LastValTS"), \
+          properties.get("EventTZ") or properties.get("OriginTZ")), \
+        speed = properties.get("Velocity"), \
+        heading = properties.get("Heading"), \
+        state = properties.get("TrainState") \
+        )
+      readings.add(reading)
       count = 1
       while ("Station" + str(count)) in properties:
         stopinfo = jsonloads(properties.get("Station" + str(count)))
@@ -601,40 +618,38 @@ def decode_trains_asset(asset_id):
           stopinfo.get("tz"))
         deptime = deptext and parseAmtrakDateTime2(deptext,
           stopinfo.get("tz"))
-        for code in codes:
-          # Be aware of the use of boolean short-circuiting here
-          stops.add(TrainStop( \
-            station, \
-            code, \
-            arrtime, \
-            deptime \
-            ))
+        # Be aware of the use of boolean short-circuiting here
+        stops.add(TrainStop( \
+          station, \
+          code, \
+          arrtime, \
+          deptime \
+          ))
         if "postdep" in stopinfo:
           t = parseAmtrakDateTime2(stopinfo.get("postdep"),
             stopinfo.get("tz"))
-          for code in codes:
-            departures.add( \
-              TrainDeparture( \
-                code, \
-                station, \
-                t \
-                ))
+          departures.add( \
+            TrainDeparture( \
+              code, \
+              station, \
+              t \
+              ))
         if "postarr" in stopinfo:
           t = parseAmtrakDateTime2(stopinfo.get("postarr"),
             stopinfo.get("tz"))
-          for code in codes:
-            arrivals.add( \
-              TrainArrival(
-                code, \
-                station, \
-                t \
-                ))
+          arrivals.add( \
+            TrainArrival(
+              code, \
+              station, \
+              t \
+              ))
         count += 1
   return {Train(): trains, \
           TrainReading(): readings, \
           TrainStop(): stops, \
           TrainArrival(): arrivals, \
           TrainDeparture(): departures, \
+          Alias(): aliases \
          }
 
 def decode_stations_asset(asset_id):
@@ -737,6 +752,7 @@ def main():
   Station().initialize(db, existing)
   TrainDeparture().initialize(db, existing)
   TrainArrival().initialize(db, existing)
+  Alias().initialize(db, existing)
   
   # --- ACCESS NEAR STATIC INFORMATION ---
   # Contains a list of train routes
@@ -778,7 +794,7 @@ def main():
       oldstations = MySQLObjectGroup(Station())
       oldstations.read(db)
       newstations = stations - oldstations
-      print("\n".join(str(station) for station in newstations))
+      print("\n".join(str(station.data) for station in newstations))
       if len(newstations):
         newstations.write(db)
     # Time in seconds since the epoch
