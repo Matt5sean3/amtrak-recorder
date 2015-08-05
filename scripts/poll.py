@@ -79,9 +79,6 @@ class MySQLObject(object):
     rep = [self.TableName]
     # Note: FieldDefinition is not escaped
     # so don't allow the field definitions to be publicly modified
-    print \
-      "CREATE TABLE " + self.TableName + \
-      " (" + ", ".join(self.FieldDefinition) + ");"
     cur.execute( \
       "CREATE TABLE " + self.TableName + \
       " (" + ", ".join(self.FieldDefinition) + ");")
@@ -331,24 +328,28 @@ class TrainStop(MySQLObject):
   Fields = [ \
     "StationCode", \
     "TrainNum", \
+    "OrigTime", \
     "ScheduledArrival", \
     "ScheduledDeparture" \
     ]
   FieldDefinition = [ \
     "StationCode CHAR(3)", \
     "TrainNum INT", \
+    "OrigTime DATETIME", \
     "ScheduledArrival DATETIME", \
     "ScheduledDeparture DATETIME" \
     ]
   def __init__(self, \
       stationcode = '', \
       trainnum = 0, \
+      origtime = datetime(1990, 1, 1),
       arrival = datetime(1900, 1, 1), \
       departure = datetime(1900, 1, 1) \
       ):
     super(TrainStop, self).__init__()
     self.data["StationCode"] = stationcode
     self.data["TrainNum"] = trainnum
+    self.data["OrigTime"] = origtime
     self.data["ScheduledArrival"] = arrival
     self.data["ScheduledDeparture"] = departure
 
@@ -622,6 +623,7 @@ def decode_trains_asset(asset_id):
         stops.add(TrainStop( \
           station, \
           code, \
+          origT, \
           arrtime, \
           deptime \
           ))
@@ -783,6 +785,8 @@ def main():
     # Updates the station list daily
     station_poll_cycle = 24 * 60 / poll_cycle
   
+  # Uses file descriptor 3 to connect to write to the analysis program
+  analysisPipe = fdopen(3, 'w')
   # --- POLL HIGHLY DYNAMIC INFORMATION ---
   running = True
   start_time = 0.0
@@ -794,7 +798,6 @@ def main():
       oldstations = MySQLObjectGroup(Station())
       oldstations.read(db)
       newstations = stations - oldstations
-      print("\n".join(str(station.data) for station in newstations))
       if len(newstations):
         newstations.write(db)
     # Time in seconds since the epoch
@@ -816,11 +819,14 @@ def main():
       oldentry = MySQLObjectGroup(key)
       oldentry.read(db)
       newentry = entry - oldentry
-      if key.TableName == "trains":
-        print("\n".join(str(entry.data) for entry in newentry))
       newentry.write(db)
     count = (count + 1) % station_poll_cycle
     db.commit()
+    # Write a character to the analysis pipe to trigger an update
+    analysisPipe.write(' ')
+    analysisPipe.flush()
+  analysisPipe.write('q')
+  analysisPipe.close()
 
 if __name__ == '__main__':
   main()

@@ -43,6 +43,7 @@
       </path>
     </interpreter>
   </node>
+  <linkage from="poll_data" to="analyze_data" from_fd="3" to_fd="0" />
   <externalize node="poll_data" internal="0" external="0" />
   <externalize node="poll_data" internal="1" external="1" />
   <externalize node="poll_data" internal="2" external="2" />
