@@ -58,7 +58,7 @@ class MySQLObject(object):
     return True
         
   def __hash__(self):
-    ax = 0
+    ax = hash(self.TableName)
     for key in self.Identity:
       ax += hash(self.data[key])
     return ax
@@ -357,41 +357,28 @@ class TrainArrival(MySQLObject):
   TableName = "arrivals"
   Fields = [ \
     "TrainNum", \
+    "OrigTime", \
     "StationCode", \
     "Time"]
   FieldDefinition = [ \
     "TrainNum INT", \
+    "OrigTime DATETIME", \
     "StationCode CHAR(3)", \
     "Time DATETIME"]
   def __init__(self, \
       trainnum = 0, \
+      origtime = datetime(1900, 1, 1), \
       stationcode = '', \
       time = datetime(1900, 1, 1), \
       ):
     super(TrainArrival, self).__init__()
     self.data["TrainNum"] = trainnum
+    self.data["OrigTime"] = origtime
     self.data["StationCode"] = stationcode
     self.data["Time"] = time
 
-class TrainDeparture(MySQLObject):
+class TrainDeparture(TrainArrival):
   TableName = "departures"
-  Fields = [ \
-    "TrainNum", \
-    "StationCode", \
-    "Time"]
-  FieldDefinition = [ \
-    "TrainNum INT", \
-    "StationCode CHAR(3)", \
-    "Time DATETIME"]
-  def __init__(self, \
-      trainnum = 0, \
-      stationcode = '', \
-      time = datetime(1900, 1, 1), \
-      ):
-    super(TrainDeparture, self).__init__()
-    self.data["TrainNum"] = trainnum
-    self.data["StationCode"] = stationcode
-    self.data["Time"] = time
 
 class Station(MySQLObject):
   TableName = "stations"
@@ -633,15 +620,18 @@ def decode_trains_asset(asset_id):
           departures.add( \
             TrainDeparture( \
               code, \
+              origT, \
               station, \
               t \
               ))
         if "postarr" in stopinfo:
           t = parseAmtrakDateTime2(stopinfo.get("postarr"),
             stopinfo.get("tz"))
+          # TODO: arrivals aren't getting written and I don't know why
           arrivals.add( \
             TrainArrival(
               code, \
+              origT, \
               station, \
               t \
               ))
