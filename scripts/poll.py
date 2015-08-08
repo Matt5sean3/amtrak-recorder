@@ -16,6 +16,7 @@ from urllib2 import urlopen
 # Used to open numbered file descriptors to write to
 # for use with ArcLaunch
 from os import fdopen, environ
+from sys import argv
 
 # Used to store information long term
 from MySQLdb import connect
@@ -83,12 +84,12 @@ class MySQLObject(object):
       "CREATE TABLE " + self.TableName + \
       " (" + ", ".join(self.FieldDefinition) + ");")
     cur.close()
-    db.commit()
   
-  def destroy(self, db):
+  def destroy(self, db, existing):
+    if self.TableName not in existing:
+      return
     cur = db.cursor()
-    cur.execute( \
-      "DROP TABLE %s", (self.TableName,))
+    cur.execute("DROP TABLE " + self.TableName)
     cur.close()
     db.commit()
   
@@ -267,7 +268,7 @@ class Train(MySQLObject):
     "OrigTime DATETIME", \
     "OrigStation CHAR(3)", \
     "DestStation CHAR(3)", \
-    "CONSTRAINT NumRoute PRIMARY KEY (TrainNum, OrigTime)"
+    "CONSTRAINT NumOrig PRIMARY KEY (TrainNum, OrigTime)"
     ]
   Identity = [ \
     "TrainNum", \
@@ -291,6 +292,7 @@ class TrainReading(MySQLObject):
   TableName = "readings"
   Fields = [ \
     "TrainNum", \
+    "OrigTime", \
     "Latitude", \
     "Longitude", \
     "Time", \
@@ -299,15 +301,23 @@ class TrainReading(MySQLObject):
     "State"]
   FieldDefinition = [
     "TrainNum INT", \
+    "OrigTime DATETIME", \
     "Latitude DOUBLE", \
     "Longitude DOUBLE", \
     "Time DATETIME", \
     "Speed DOUBLE", \
     "Heading ENUM('', 'N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW')", \
-    "State ENUM('', 'Predeparture', 'Active', 'Completed')" \
+    "State ENUM('', 'Predeparture', 'Active', 'Completed')", \
+    "CONSTRAINT NumOrigTime PRIMARY KEY (TrainNum, OrigTime, Time)" \
+    ]
+  Identity = [ \
+    "TrainNum", \
+    "OrigTime", \
+    "Time" \
     ]
   def __init__(self, \
       trainnum = 0, \
+      origtime = datetime(1900, 1, 1), \
       lonlat = [0.0, 0.0], \
       time = datetime(1900, 1, 1), \
       speed = 0.0, \
@@ -316,6 +326,7 @@ class TrainReading(MySQLObject):
       ):
     super(TrainReading, self).__init__()
     self.data["TrainNum"] = trainnum
+    self.data["OrigTime"] = origtime
     self.data["Longitude"] = lonlat[0]
     self.data["Latitude"] = lonlat[1]
     self.data["Time"] = time
@@ -330,55 +341,41 @@ class TrainStop(MySQLObject):
     "TrainNum", \
     "OrigTime", \
     "ScheduledArrival", \
-    "ScheduledDeparture" \
+    "ScheduledDeparture", \
+    "ActualArrival", \
+    "ActualDeparture" \
     ]
   FieldDefinition = [ \
     "StationCode CHAR(3)", \
     "TrainNum INT", \
     "OrigTime DATETIME", \
     "ScheduledArrival DATETIME", \
-    "ScheduledDeparture DATETIME" \
+    "ScheduledDeparture DATETIME", \
+    "ActualArrival DATETIME", \
+    "ActualDeparture DATETIME" \
+    ]
+  Identity = [ \
+    "TrainNum", \
+    "OrigTime", \
+    "StationCode" \
     ]
   def __init__(self, \
       stationcode = '', \
       trainnum = 0, \
       origtime = datetime(1990, 1, 1),
-      arrival = datetime(1900, 1, 1), \
-      departure = datetime(1900, 1, 1) \
+      scheduledArrival = datetime(1900, 1, 1), \
+      scheduledDeparture = datetime(1900, 1, 1), \
+      actualArrival = datetime(1900, 1, 1), \
+      actualDeparture = datetime(1900, 1, 1) \
       ):
     super(TrainStop, self).__init__()
     self.data["StationCode"] = stationcode
     self.data["TrainNum"] = trainnum
     self.data["OrigTime"] = origtime
-    self.data["ScheduledArrival"] = arrival
-    self.data["ScheduledDeparture"] = departure
-
-class TrainArrival(MySQLObject):
-  TableName = "arrivals"
-  Fields = [ \
-    "TrainNum", \
-    "OrigTime", \
-    "StationCode", \
-    "Time"]
-  FieldDefinition = [ \
-    "TrainNum INT", \
-    "OrigTime DATETIME", \
-    "StationCode CHAR(3)", \
-    "Time DATETIME"]
-  def __init__(self, \
-      trainnum = 0, \
-      origtime = datetime(1900, 1, 1), \
-      stationcode = '', \
-      time = datetime(1900, 1, 1), \
-      ):
-    super(TrainArrival, self).__init__()
-    self.data["TrainNum"] = trainnum
-    self.data["OrigTime"] = origtime
-    self.data["StationCode"] = stationcode
-    self.data["Time"] = time
-
-class TrainDeparture(TrainArrival):
-  TableName = "departures"
+    self.data["ScheduledArrival"] = scheduledArrival
+    self.data["ScheduledDeparture"] = scheduledDeparture
+    self.data["ActualArrival"] = actualArrival
+    self.data["ActualDeparture"] = actualDeparture
 
 class Station(MySQLObject):
   TableName = "stations"
@@ -414,12 +411,12 @@ class Station(MySQLObject):
     "Type ENUM('', 'Platform only (no shelter)', 'Platform with Shelter', 'Station Building (with waiting room)')", \
     "DateModif DATETIME" \
     ]
-  Key = [
-    "Code"
+  Key = [ \
+    "Code" \
     ]
-  Identity = [
-    "Code",
-    "DateModif"
+  Identity = [ \
+    "Code", \
+    "DateModif" \
     ]
   def __init__(self, \
       code = "\0\0\0", 
@@ -563,8 +560,6 @@ def decode_trains_asset(asset_id):
   trains = MySQLObjectGroup(Train())
   readings = MySQLObjectGroup(TrainReading())
   stops = MySQLObjectGroup(TrainStop())
-  arrivals = MySQLObjectGroup(TrainArrival())
-  departures = MySQLObjectGroup(TrainDeparture())
   aliases = MySQLObjectGroup(Alias())
   for page in pages:
     # Aliasing of train numbers throws a major wrench into this
@@ -588,6 +583,7 @@ def decode_trains_asset(asset_id):
         ))
       reading = TrainReading( \
         trainnum = code, \
+        origtime = origT, \
         lonlat = geom.get("coordinates"), \
         time = parseAmtrakDateTime(properties.get("LastValTS"), \
           properties.get("EventTZ") or properties.get("OriginTZ")), \
@@ -600,47 +596,25 @@ def decode_trains_asset(asset_id):
       while ("Station" + str(count)) in properties:
         stopinfo = jsonloads(properties.get("Station" + str(count)))
         station = stopinfo.get("code")
-        deptext = stopinfo.get("schdep")
-        arrtext = stopinfo.get("scharr")
-        arrtime = arrtext and parseAmtrakDateTime2(arrtext,
-          stopinfo.get("tz"))
-        deptime = deptext and parseAmtrakDateTime2(deptext,
-          stopinfo.get("tz"))
+        scheddeptext = stopinfo.get("schdep")
+        schedarrtext = stopinfo.get("scharr")
+        actdeptext = stopinfo.get("postdep")
+        actarrtext = stopinfo.get("postarr")
+        timezone = stopinfo.get("tz")
         # Be aware of the use of boolean short-circuiting here
         stops.add(TrainStop( \
           station, \
           code, \
           origT, \
-          arrtime, \
-          deptime \
+          schedarrtext and parseAmtrakDateTime2(schedarrtext, timezone), \
+          scheddeptext and parseAmtrakDateTime2(scheddeptext, timezone), \
+          actarrtext and parseAmtrakDateTime2(actarrtext, timezone), \
+          actdeptext and parseAmtrakDateTime2(actdeptext, timezone) \
           ))
-        if "postdep" in stopinfo:
-          t = parseAmtrakDateTime2(stopinfo.get("postdep"),
-            stopinfo.get("tz"))
-          departures.add( \
-            TrainDeparture( \
-              code, \
-              origT, \
-              station, \
-              t \
-              ))
-        if "postarr" in stopinfo:
-          t = parseAmtrakDateTime2(stopinfo.get("postarr"),
-            stopinfo.get("tz"))
-          # TODO: arrivals aren't getting written and I don't know why
-          arrivals.add( \
-            TrainArrival(
-              code, \
-              origT, \
-              station, \
-              t \
-              ))
         count += 1
   return {Train(): trains, \
           TrainReading(): readings, \
           TrainStop(): stops, \
-          TrainArrival(): arrivals, \
-          TrainDeparture(): departures, \
           Alias(): aliases \
          }
 
@@ -715,7 +689,16 @@ def read_train_assets(base_url):
   pass
 
 
-def main():
+def main(args):
+  tables = [ \
+    Route(), \
+    Segment(), \
+    Train(), \
+    TrainReading(), \
+    TrainStop(), \
+    Station(), \
+    Alias() \
+    ]
   # --- OPEN DATABASE ---
   # Uses environment variables
   # Opens a connection to the database
@@ -732,20 +715,21 @@ def main():
     read_default_file = environ.get('DB_OPTION_FILE') or "", \
     ssl = read_ssl_keys(environ.get('DB_SSL_FILE')) \
     )
-  # --- CREATE TABLES ---
-  # Used to prevent attempts to create pre-existing tables
   existing = MySQLObject.getExistingTables(db)
   print(existing)
-  Route().initialize(db, existing)
-  Segment().initialize(db, existing)
-  Train().initialize(db, existing)
-  TrainReading().initialize(db, existing)
-  TrainStop().initialize(db, existing)
-  Station().initialize(db, existing)
-  TrainDeparture().initialize(db, existing)
-  TrainArrival().initialize(db, existing)
-  Alias().initialize(db, existing)
+  # --- DROP THE TABLES ---
+  if "--reset" in args:
+    print("RESETING TABLES")
+    for table in tables:
+      table.destroy(db, existing)
+    existing = MySQLObject.getExistingTables(db)
+    db.commit()
+  # --- CREATE TABLES ---
+  # Used to prevent attempts to create pre-existing tables
   
+  for table in tables:
+    table.initialize(db, existing)
+  db.commit()
   # --- ACCESS NEAR STATIC INFORMATION ---
   # Contains a list of train routes
   # Generally at http://www.amtrak.com/rttl/js/RoutesList.json
@@ -817,7 +801,8 @@ def main():
     analysisPipe.flush()
   analysisPipe.write('q')
   analysisPipe.close()
+  db.close()
 
 if __name__ == '__main__':
-  main()
+  main(argv)
 
