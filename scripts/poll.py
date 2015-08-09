@@ -515,15 +515,15 @@ def decode_trains_asset(asset_id):
       # append the adjusted reading time
       readingTime = parseAmtrakDateTime(properties.get("LastValTS"), \
           properties.get("EventTZ") or properties.get("OriginTZ"))
-      if readingTime.hour != (readingTime.now().hour + 4) % 24:
-        # There are weird cases where the time simply doesn't align
-        # Rather, new readings need to be time-stamped
-        print("RAW TIME")
-        print(parseAmtrakDateTime(properties.get("LastValTS"), 'U'))
-        print("EventTZ: " + str(properties.get("EventTZ")))
-        print("OriginTZ: " + properties.get("OriginTZ"))
-        print("ADJUSTED")
-        print(readingTime)
+      #if readingTime.hour != readingTime.utcnow().hour:
+      #  # There are weird cases where the time simply doesn't align
+      #  # Rather, new readings need to be time-stamped
+      #  print("RAW TIME")
+      #  print(parseAmtrakDateTime(properties.get("LastValTS"), 'U'))
+      #  print("EventTZ: " + str(properties.get("EventTZ")))
+      #  print("OriginTZ: " + properties.get("OriginTZ"))
+      #  print("ADJUSTED")
+      #  print(readingTime)
       properties["RecordTime"] = readingTime
       readings.add(TrainReading(properties))
       count = 1
@@ -692,6 +692,8 @@ def main(args):
   running = True
   start_time = 0.0
   count = 0
+  lastTS = None
+  currentTS = None
   while running:
     if count == 0:
       stations = decode_stations_asset( \
@@ -712,6 +714,7 @@ def main(args):
     if time_diff < poll_cycle:
       print "sleep:        " + str(poll_cycle - time_diff)
       sleep(poll_cycle - time_diff)
+    currentTS = datetime(1990, 1, 1).utcnow()
     # Record the start time
     start_time = time()
     # Read train assets
@@ -720,12 +723,26 @@ def main(args):
       oldentry = MySQLObjectGroup(key)
       oldentry.read(db)
       newentry = entry - oldentry
+      if key.TableName == "readings":
+        if lastTS:
+          print "LAST TIMESTAMP"
+          print lastTS
+          print "CURRENT TIMESTAMP"
+          print currentTS
+        for timeentry in newentry:
+          entrytime = timeentry.data["Time"]
+          if lastTS and entrytime.hour != currentTS.hour:
+            print("CURRENT TIME")
+            print(currentTS)
+            print("STRANGE TIME")
+            print(entrytime)
       newentry.write(db)
     count = (count + 1) % station_poll_cycle
     db.commit()
     # Write a character to the analysis pipe to trigger an update
     analysisPipe.write(' ')
     analysisPipe.flush()
+    lastTS = currentTS
   analysisPipe.write('q')
   analysisPipe.close()
   db.close()

@@ -2,7 +2,7 @@
 
 require("DBI")
 require("RMySQL")
-require("rgeos")
+#require("rgeos")
 
 db <- dbConnect(MySQL(), 
                 dbname="train_database", 
