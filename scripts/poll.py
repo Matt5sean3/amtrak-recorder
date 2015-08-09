@@ -36,9 +36,13 @@ class MySQLObject(object):
   ReadFields = None
   Identity = None
   Keys = None
+  Mapping = None
   data = {}
-  def __init__(self):
+  def __init__(self, info = None):
     self.data = dict()
+    if self.Mapping and info:
+      for key, value in self.Mapping.iteritems():
+        self.data[key] = info.get(value)
     if not self.WriteFields:
       self.WriteFields = self.Fields
     if not self.ReadFields:
@@ -61,7 +65,8 @@ class MySQLObject(object):
   def __hash__(self):
     ax = hash(self.TableName)
     for key in self.Identity:
-      ax += hash(self.data[key])
+      value = self.data.get(key)
+      ax += hash(value) if value else 0
     return ax
   
   def subList(self, num):
@@ -120,6 +125,7 @@ class MySQLObject(object):
     dup.ReadFields = self.ReadFields
     dup.Keys = self.Keys
     dup.Identity = self.Identity
+    dup.Mapping = self.Mapping
     dup.data = self.data.copy()
     return dup
   def writeStream(self, f):
@@ -212,47 +218,6 @@ class MySQLObjectGroup(set):
       justdata.append(entry.data)
     return jsonsaves(justdata)
 
-class Route(MySQLObject):
-  TableName = "routes"
-  name = ""
-  Fields = [ \
-    'ID', \
-    'name' \
-  ]
-  WriteFields = [ \
-    'name' \
-  ]
-  FieldDefinition = [ \
-    'ID INT AUTO_INCREMENT', \
-    'name TEXT', \
-    'PRIMARY KEY(id)' \
-  ]
-  FieldDefault = {
-    "ID": 0, \
-    "name": ""
-  }
-  def __init__(self, n = ""):
-    name = n
-    super(Route, self).__init__();
-
-
-class Segment(MySQLObject):
-  TableName = "segments"
-  Fields = [ \
-    "TrainNum", \
-    "North", \
-    "South", \
-    "East", \
-    "West" \
-    ]
-  FieldDefinition = [ \
-    "TrainNum INT", \
-    "North DOUBLE", \
-    "South DOUBLE", \
-    "East DOUBLE", \
-    "West DOUBLE" \
-    ]
-
 class Train(MySQLObject):
   TableName = "trains"
   Fields = [ \
@@ -274,19 +239,13 @@ class Train(MySQLObject):
     "TrainNum", \
     "OrigTime" \
     ]
-  def __init__(self, \
-      trainnum = 0, \
-      routename = "", \
-      originTime = None, \
-      origin = "", \
-      destination = "" \
-      ):
-    super(Train, self).__init__()
-    self.data["TrainNum"] = trainnum
-    self.data["RouteName"] = routename
-    self.data["OrigTime"] = originTime
-    self.data["OrigStation"] = origin
-    self.data["DestStation"] = destination
+  Mapping = { \
+    "TrainNum": "TrainNum", \
+    "RouteName": "RouteName", \
+    "OrigTime": "OrigTime", \
+    "OrigStation": "OrigCode", \
+    "DestStation": "DestCode" \
+    }
 
 class TrainReading(MySQLObject):
   TableName = "readings"
@@ -315,24 +274,16 @@ class TrainReading(MySQLObject):
     "OrigTime", \
     "Time" \
     ]
-  def __init__(self, \
-      trainnum = 0, \
-      origtime = datetime(1900, 1, 1), \
-      lonlat = [0.0, 0.0], \
-      time = datetime(1900, 1, 1), \
-      speed = 0.0, \
-      heading = '', \
-      state = '', \
-      ):
-    super(TrainReading, self).__init__()
-    self.data["TrainNum"] = trainnum
-    self.data["OrigTime"] = origtime
-    self.data["Longitude"] = lonlat[0]
-    self.data["Latitude"] = lonlat[1]
-    self.data["Time"] = time
-    self.data["Speed"] = speed
-    self.data["Heading"] = heading
-    self.data["State"] = state
+  Mapping = { \
+    "TrainNum": "TrainNum", \
+    "OrigTime": "OrigTime", \
+    "Latitude": "Latitude", \
+    "Longitude": "Longitude", \
+    "Time": "RecordTime", \
+    "Speed": "Velocity", \
+    "Heading": "Heading", \
+    "State": "TrainState" \
+    }
 
 class TrainStop(MySQLObject):
   TableName = "stops"
@@ -359,23 +310,15 @@ class TrainStop(MySQLObject):
     "OrigTime", \
     "StationCode" \
     ]
-  def __init__(self, \
-      stationcode = '', \
-      trainnum = 0, \
-      origtime = datetime(1990, 1, 1),
-      scheduledArrival = datetime(1900, 1, 1), \
-      scheduledDeparture = datetime(1900, 1, 1), \
-      actualArrival = datetime(1900, 1, 1), \
-      actualDeparture = datetime(1900, 1, 1) \
-      ):
-    super(TrainStop, self).__init__()
-    self.data["StationCode"] = stationcode
-    self.data["TrainNum"] = trainnum
-    self.data["OrigTime"] = origtime
-    self.data["ScheduledArrival"] = scheduledArrival
-    self.data["ScheduledDeparture"] = scheduledDeparture
-    self.data["ActualArrival"] = actualArrival
-    self.data["ActualDeparture"] = actualDeparture
+  Mapping = { \
+    "StationCode": "code", \
+    "TrainNum": "TrainNum", \
+    "OrigTime": "OrigTime", \
+    "ScheduledArrival": "adj_scharr", \
+    "ScheduledDeparture": "adj_schdep", \
+    "ActualArrival": "adj_postarr", \
+    "ActualDeparture": "adj_postdep" \
+    }
 
 class Station(MySQLObject):
   TableName = "stations"
@@ -407,7 +350,7 @@ class Station(MySQLObject):
                "'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY'," + \
                "'DC', 'AB', 'BC', 'ON', 'QC', '')", \
     "ZipCode CHAR(7)", \
-    "IsTrainSt BOOLEAN", \
+    "IsTrainSt ENUM('Y', 'N')", \
     "Type ENUM('', 'Platform only (no shelter)', 'Platform with Shelter', 'Station Building (with waiting room)')", \
     "DateModif DATETIME" \
     ]
@@ -418,29 +361,19 @@ class Station(MySQLObject):
     "Code", \
     "DateModif" \
     ]
-  def __init__(self, \
-      code = "\0\0\0", 
-      name = "",
-      lonlat = (0.0, 0.0), 
-      address = "", 
-      city = "",
-      state = "",
-      zipCode = 0,
-      isTrainStation = False,
-      stationType = '',
-      modified = datetime(1900, 1, 1)):
-    super(Station, self).__init__()
-    self.data["Code"] = code
-    self.data["Name"] = name
-    self.data["Longitude"] = lonlat[0]
-    self.data["Latitude"] = lonlat[1]
-    self.data["Address"] = address
-    self.data["City"] = city
-    self.data["State"] = state
-    self.data["ZipCode"] = zipCode
-    self.data["IsTrainSt"] = isTrainStation
-    self.data["Type"] = stationType
-    self.data["DateModif"] = modified
+  Mapping = {
+    "Code": "Code", \
+    "Name": "Name", \
+    "Latitude": "Latitude", \
+    "Longitude": "Longitude", \
+    "Address": "Address1", \
+    "City": "City", \
+    "State": "State", \
+    "ZipCode": "Zipcode", \
+    "IsTrainSt": "IsTrainSt", \
+    "Type": "StaType", \
+    "DateModif": "LastModif" \
+    }
 
 # I've seperated out aliases because things get nonsensical
 # and inefficient if I don't
@@ -456,14 +389,11 @@ class Alias(MySQLObject):
     "OrigTime DATETIME", \
     "Alias INT", \
     ]
-  def __init__(self, \
-      num = 0,
-      time = datetime(1900, 1, 1),
-      alias = 0):
-    super(Alias, self).__init__()
-    self.data["TrainNum"] = num
-    self.data["OrigTime"] = time
-    self.data["Alias"] = alias
+  Mapping = { \
+    "TrainNum": "TrainNum", \
+    "OrigTime": "OrigTime", \
+    "Alias": "Alias" \
+    }
 
 def readGoogleEngineAsset(asset_id):
   asset_url = "https://www.googleapis.com/mapsengine/v1/tables/" + \
@@ -565,52 +495,58 @@ def decode_trains_asset(asset_id):
     # Aliasing of train numbers throws a major wrench into this
     for feature in page.get("features"):
       geom = feature.get("geometry");
+      coords = geom.get("coordinates")
       properties = feature.get("properties");
-      code = int(properties.get("TrainNum"))
-      aliasString = properties.get("Aliases")
+      properties["TrainNum"] = int(properties["TrainNum"])
       aliasNums = None
-      origT = parseAmtrakDateTime(properties.get("OrigSchDep"),
+      # Add the adjusted origin time
+      properties["OrigTime"] = parseAmtrakDateTime(properties.get("OrigSchDep"),
           properties.get("OriginTZ"))
+      # append latitude and longitude to properties
+      properties["Longitude"] = coords[0]
+      properties["Latitude"] = coords[1]
+      # Record the aliases
+      aliasString = properties.get("Aliases")
       if aliasString != "":
-        aliasNums = (aliases.add(Alias(code, origT, int(alias))) for alias in \
-          aliasString.split(","))
-      trains.add(Train( \
-        code, \
-        properties.get("RouteName"), \
-        origT, \
-        properties.get("OrigCode"), \
-        properties.get("DestCode") \
-        ))
-      reading = TrainReading( \
-        trainnum = code, \
-        origtime = origT, \
-        lonlat = geom.get("coordinates"), \
-        time = parseAmtrakDateTime(properties.get("LastValTS"), \
-          properties.get("EventTZ") or properties.get("OriginTZ")), \
-        speed = properties.get("Velocity"), \
-        heading = properties.get("Heading"), \
-        state = properties.get("TrainState") \
-        )
-      readings.add(reading)
+        for alias in aliasString.split(","):
+          properties["Alias"] = alias
+          aliasNums = aliases.add(Alias(properties))
+      trains.add(Train(properties))
+      # append the adjusted reading time
+      readingTime = parseAmtrakDateTime(properties.get("LastValTS"), \
+          properties.get("EventTZ") or properties.get("OriginTZ"))
+      if readingTime.hour != (readingTime.now().hour + 4) % 24:
+        # There are weird cases where the time simply doesn't align
+        # Rather, new readings need to be time-stamped
+        print("RAW TIME")
+        print(parseAmtrakDateTime(properties.get("LastValTS"), 'U'))
+        print("EventTZ: " + str(properties.get("EventTZ")))
+        print("OriginTZ: " + properties.get("OriginTZ"))
+        print("ADJUSTED")
+        print(readingTime)
+      properties["RecordTime"] = readingTime
+      readings.add(TrainReading(properties))
       count = 1
       while ("Station" + str(count)) in properties:
         stopinfo = jsonloads(properties.get("Station" + str(count)))
+        stopinfo["TrainNum"] = properties.get("TrainNum")
+        stopinfo["OrigTime"] = properties.get("OrigTime")
         station = stopinfo.get("code")
         scheddeptext = stopinfo.get("schdep")
         schedarrtext = stopinfo.get("scharr")
         actdeptext = stopinfo.get("postdep")
         actarrtext = stopinfo.get("postarr")
         timezone = stopinfo.get("tz")
+        stopinfo["adj_schdep"] = scheddeptext and \
+          parseAmtrakDateTime2(scheddeptext, timezone)
+        stopinfo["adj_scharr"] = schedarrtext and \
+          parseAmtrakDateTime2(schedarrtext, timezone)
+        stopinfo["adj_postdep"] = actdeptext and \
+          parseAmtrakDateTime2(actdeptext, timezone)
+        stopinfo["adj_postarr"] = actarrtext and \
+          parseAmtrakDateTime2(actarrtext, timezone)
         # Be aware of the use of boolean short-circuiting here
-        stops.add(TrainStop( \
-          station, \
-          code, \
-          origT, \
-          schedarrtext and parseAmtrakDateTime2(schedarrtext, timezone), \
-          scheddeptext and parseAmtrakDateTime2(scheddeptext, timezone), \
-          actarrtext and parseAmtrakDateTime2(actarrtext, timezone), \
-          actdeptext and parseAmtrakDateTime2(actdeptext, timezone) \
-          ))
+        stops.add(TrainStop(stopinfo))
         count += 1
   return {Train(): trains, \
           TrainReading(): readings, \
@@ -627,24 +563,17 @@ def decode_stations_asset(asset_id):
       # Convert the station data to objects
       geom = feature.get("geometry")
       properties = feature.get("properties")
+      coords = geom.get("coordinates")
+      properties["Longitude"] = coords[0]
+      properties["Latitude"] = coords[1]
       # Needs to convert datetime
       # An issue is that I can't tell what timezone
       # those modifications are time stamped in
       # TODO: stop assuming UTC timezone for this case
       # TODO: find the method of finding the correct timezone
-      stations.add(Station( \
-        properties.get("Code"), \
-        properties.get("Name"),
-        geom.get("coordinates"), \
-        properties.get("Address1"), \
-        properties.get("City"), \
-        properties.get("State"), \
-        properties.get("Zipcode"), \
-        properties.get("IsTrainSt") == 'Y', \
-        properties.get("StaType"), \
-        parseAmtrakDateTime(properties.get("DateModif"), \
-          'U') \
-        ))
+      properties["LastModif"] = parseAmtrakDateTime( \
+        properties.get("DateModif"), 'U')
+      stations.add(Station(properties)) \
   # Check the existing codes
   return stations
 
@@ -691,8 +620,6 @@ def read_train_assets(base_url):
 
 def main(args):
   tables = [ \
-    Route(), \
-    Segment(), \
     Train(), \
     TrainReading(), \
     TrainStop(), \

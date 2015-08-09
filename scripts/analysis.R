@@ -2,6 +2,7 @@
 
 require("DBI")
 require("RMySQL")
+require("rgeos")
 
 db <- dbConnect(MySQL(), 
                 dbname="train_database", 
@@ -34,8 +35,8 @@ while(readChar(regulator, 1, TRUE) == " ") {
                                      Longitude, \
                                      Time, \
                                      State FROM readings;")
-  print("READINGS")
-  print(readings)
+  #print("READINGS")
+  #print(readings)
   
   # Form a mapping between two station codes and a sample set
   # Expected is meant to form an initial value
@@ -116,14 +117,12 @@ while(readChar(regulator, 1, TRUE) == " ") {
       actual_arrival_ts = NULL
     }
     # === EXTRACT RELEVANT READINGS ===
-    if(length(actual_arrival_ts) > length(actual_departure_ts)) {
-      print("SCHEDULE")
-      print(schedule)
-      print("ARRIVALS")
-      print(actual_arrival_ts)
-      print("DEPARTURES")
-      print(actual_departure_ts)
-    }
+    #print("SCHEDULE")
+    #print(schedule)
+    #print("ARRIVALS")
+    #print(actual_arrival_ts)
+    #print("DEPARTURES")
+    #print(actual_departure_ts)
 
     # === CALCULATE ACTUAL TIME TO TRAVEL BETWEEN STATIONS ===
     #if(lengths_traveled > 0) {
