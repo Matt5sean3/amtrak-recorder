@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<launch name="record_trains"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:noNamespaceSchemaLocation="@ARCLAUNCH_XML_SCHEMA@">
+  <node name="poll_data" xsi:type="script_t">
+    <path absolute="false" os="linux">
+      <directory>scripts</directory>
+      <directory>poll.py</directory>
+    </path>
+    <arg>--reset</arg>
+    <env key="TRAIN_ROUTE_LIST_URI" value="http://www.amtrak.com/rttl/js/RoutesList.json" />
+    <env key="TRAIN_ROUTE_PROPERTY_URI" value="http://www.amtrak.com/rttl/js/route_properties.json" />
+    <env key="GOOGLE_ENGINE_TRAINS_ASSET_ID" value="01382379791355219452-08584582962951999356" />
+    <env key="GOOGLE_ENGINE_ROUTES_ASSET_ID" value="01382379791355219452-07259207709646421680" />
+    <env key="GOOGLE_ENGINE_STATIONS_ASSET_ID" value="01382379791355219452-17620014524089761219" />
+    <env key="GOOGLE_ENGINE_KEY" value="AIzaSyCVFeFQrtk-ywrUE0pEcvlwgCqS6TJcOW4" />
+    <env key="DB_HOST" value="localhost" />
+    <env key="DB_USER" value="trains" />
+    <env key="DB_PASSWD" value="train spotter" />
+    <env key="DB_NAME" value="train_database" />
+    <interpreter name="python_interpreter">
+      <path absolute="true" os="linux">
+        <directory>usr</directory>
+        <directory>bin</directory>
+        <directory>python</directory>
+      </path>
+    </interpreter>
+  </node>
+  <externalize node="poll_data" internal="0" external="0" />
+  <externalize node="poll_data" internal="1" external="1" />
+  <externalize node="poll_data" internal="2" external="2" />
+</launch>
