@@ -720,6 +720,8 @@ def main(args):
     # Read train assets
     train_data = decode_trains_asset(environ.get("GOOGLE_ENGINE_TRAINS_ASSET_ID"))
     for key, entry in train_data.iteritems():
+      # There's a major issue now where data needs to update but still has its same identity
+      # Fixing this issue may require following a much different paradigm, more similar to how analysis.R now is
       oldentry = MySQLObjectGroup(key)
       oldentry.read(db)
       newentry = entry - oldentry
