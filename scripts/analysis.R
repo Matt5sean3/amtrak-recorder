@@ -31,8 +31,7 @@ while(readChar(regulator, 1, TRUE) == " ") {
   print(nrow(trains))
 
   # === EXTRACT ALL STOPS WHICH HAVE BEEN TRAVELED THROUGH ===
-  #stops <- dbReadTable(db, "stops")
-  stops <- dbGetQuery(db, "SELECT * FROM stops;")
+  stops <- dbReadTable(db, "stops")
   print("NUM STOPS")
   print(nrow(stops))
   
@@ -70,7 +69,7 @@ while(readChar(regulator, 1, TRUE) == " ") {
     # === IGNORE ALL THE ROWS YOU'RE DONE PROCESSING ===
     if(rows > 0) {
       if(rows - 1 != linksProcessed[identity]) {
-        print(traveled_schedule)
+        #print(traveled_schedule)
       }
       linksProcessed[identity] <- rows - 1
       traveled_schedule = traveled_schedule[(nProcessed + 1):rows, ]

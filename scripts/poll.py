@@ -33,7 +33,6 @@ class MySQLObject(object):
   FieldDefinition = []
   FieldDefault = {}
   Identity = None
-  Keys = None
   Mapping = None
   data = {}
   db = None
@@ -48,8 +47,6 @@ class MySQLObject(object):
     self.inTable = False
     if not self.Identity:
       self.Identity = self.Fields
-    if not self.Keys:
-      self.Keys = self.Fields
     self.update(info)
   
   def __eq__(self, other):
@@ -61,7 +58,7 @@ class MySQLObject(object):
       if self.data.get(key) != other.data.get(key):
         return False
     return True
-        
+
   def __hash__(self):
     ax = hash(self.TableName)
     for key in self.Identity:
@@ -102,12 +99,25 @@ class MySQLObject(object):
   def update(self, info):
     if not info:
       return
-    self.data = dict()
     if self.Mapping:
       for key, value in self.Mapping.iteritems():
-        if self.data.get(key) != info.get(value):
-          self.consistent = False
-        self.data[key] = info.get(value)
+        new = info.get(value)
+        # Needs to cast types sometimes
+        # Rounding creates issues with strict equality
+        if self.inTable:
+          old = self.data.get(key)
+          if old != None and \
+            type(old) != type(new):
+            new = type(old)(new)
+          if old == new or \
+            (type(old) == float and \
+             abs(old - new) < 1e-6):
+            continue
+          print self.TableName + ": " + key
+          print old
+          print new
+        self.consistent = False
+        self.data[key] = new
     else:
       for key in self.Fields:
         if self.data.get(key) != info.get(key):
@@ -118,8 +128,8 @@ class MySQLObject(object):
     # Should be used only for reading back from the table
     self.inTable = True
     self.consistent = True
-    for key in self.Fields:
-      self.data[key] = info.get(key)
+    for idx, key in enumerate(self.Fields):
+      self.data[key] = info[idx]
 
   def commit(self):
     # Used to update the row
@@ -129,6 +139,8 @@ class MySQLObject(object):
     if self.inTable:
       if not self.replaceCmd:
         self.prepare()
+      #print "UPDATING ENTRY"
+      #print self.TableName + ": " + str(self.getDataList(self.Fields))
       cur.execute(self.replaceCmd, self.getDataList(self.Fields))
     else:
       if not self.insertCmd:
@@ -157,7 +169,6 @@ class MySQLObject(object):
     dup.Fields = self.Fields
     dup.FieldDefinition = self.FieldDefinition
     dup.FieldDefault = self.FieldDefault
-    dup.Keys = self.Keys
     dup.Identity = self.Identity
     dup.Mapping = self.Mapping
     dup.data = self.data.copy()
@@ -208,9 +219,9 @@ class MySQLObjectGroup(object):
       entry = self.base.copy()
       entry.rawUpdate(fetch)
       if entry not in self.entries:
-        self.entries.add(entry)
+        self.entries[entry] = entry
       else:
-        pass
+        self.entries[entry].rawUpdate(fetch)
     cur.close()
 
 class Train(MySQLObject):
@@ -267,7 +278,8 @@ class TrainReading(MySQLObject):
   Identity = [ \
     "TrainNum", \
     "OrigTime", \
-    "Time" \
+    "Time", \
+    "State" \
     ]
   Mapping = { \
     "TrainNum": "TrainNum", \
@@ -298,7 +310,8 @@ class TrainStop(MySQLObject):
     "ScheduledArrival DATETIME", \
     "ScheduledDeparture DATETIME", \
     "ActualArrival DATETIME", \
-    "ActualDeparture DATETIME" \
+    "ActualDeparture DATETIME", \
+    "CONSTRAINT CodeNumOrig PRIMARY KEY (StationCode, TrainNum, OrigTime)" \
     ]
   Identity = [ \
     "TrainNum", \
@@ -348,9 +361,6 @@ class Station(MySQLObject):
     "IsTrainSt ENUM('Y', 'N')", \
     "Type ENUM('', 'Platform only (no shelter)', 'Platform with Shelter', 'Station Building (with waiting room)')", \
     "DateModif DATETIME" \
-    ]
-  Key = [ \
-    "Code" \
     ]
   Identity = [ \
     "Code", \
