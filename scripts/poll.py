@@ -32,25 +32,25 @@ class MySQLObject(object):
   Fields = []
   FieldDefinition = []
   FieldDefault = {}
-  WriteFields = None
-  ReadFields = None
   Identity = None
   Keys = None
   Mapping = None
   data = {}
-  def __init__(self, info = None):
+  db = None
+  insertCmd = None
+  replaceCmd = None
+  consistent = False
+  inTable = False
+  def __init__(self, db, info = None):
+    self.db = db
     self.data = dict()
-    if self.Mapping and info:
-      for key, value in self.Mapping.iteritems():
-        self.data[key] = info.get(value)
-    if not self.WriteFields:
-      self.WriteFields = self.Fields
-    if not self.ReadFields:
-      self.ReadFields = self.Fields
+    self.consistent = False
+    self.inTable = False
     if not self.Identity:
       self.Identity = self.Fields
     if not self.Keys:
       self.Keys = self.Fields
+    self.update(info)
   
   def __eq__(self, other):
     # Should efficiently cover most cases
@@ -78,10 +78,10 @@ class MySQLObject(object):
       ret.append(self.data.get(name))
     return ret
   
-  def initialize(self, db, existing):
+  def initialize(self, existing):
     if self.TableName in existing:
       return
-    cur = db.cursor()
+    cur = self.db.cursor()
     rep = [self.TableName]
     # Note: FieldDefinition is not escaped
     # so don't allow the field definitions to be publicly modified
@@ -89,49 +89,80 @@ class MySQLObject(object):
       "CREATE TABLE " + self.TableName + \
       " (" + ", ".join(self.FieldDefinition) + ");")
     cur.close()
+    self.db.commit()
   
-  def destroy(self, db, existing):
+  def destroy(self, existing):
     if self.TableName not in existing:
       return
-    cur = db.cursor()
+    cur = self.db.cursor()
     cur.execute("DROP TABLE " + self.TableName)
     cur.close()
-    db.commit()
-  
-  def write(self, db):
-    cur = db.cursor()
-    slots = self.subList(len(self.WriteFields))
-    rep = [self.TableName]
-    rep.extend(self.WriteFields)
-    rep.extend(self.getDataList(self.WriteFields))
-    cur.execute( \
-      "INSERT INTO %s (" + slots + ") VALUE " + \
-      "(" + slots + ")",
-      rep
-      )
+    self.db.commit()
+
+  def update(self, info):
+    if not info:
+      return
+    self.data = dict()
+    if self.Mapping:
+      for key, value in self.Mapping.iteritems():
+        if self.data.get(key) != info.get(value):
+          self.consistent = False
+        self.data[key] = info.get(value)
+    else:
+      for key in self.Fields:
+        if self.data.get(key) != info.get(key):
+          self.consistent = False
+        self.data[key] = info.get(key)
+
+  def rawUpdate(self, info):
+    # Should be used only for reading back from the table
+    self.inTable = True
+    self.consistent = True
+    for key in self.Fields:
+      self.data[key] = info.get(key)
+
+  def commit(self):
+    # Used to update the row
+    if self.consistent:
+      return
+    cur = self.db.cursor()
+    if self.inTable:
+      if not self.replaceCmd:
+        self.prepare()
+      cur.execute(self.replaceCmd, self.getDataList(self.Fields))
+    else:
+      if not self.insertCmd:
+        self.prepare()
+      cur.execute(self.insertCmd, self.getDataList(self.Fields))
+      self.inTable = True
     cur.close()
-    db.commit()
-  
+    self.consistent = True
+
+  def prepare(self):
+    # Used to precompute an SQL string
+    slots = self.subList(len(self.Fields))
+    self.replaceCmd = "REPLACE INTO " + self.TableName + \
+      " (" + ", ".join(self.Fields) + ") VALUE " + \
+      "(" + slots + ")"
+    self.insertCmd = "INSERT INTO " + self.TableName + \
+      " (" + ", ".join(self.Fields) + ") VALUE " + \
+      "(" + slots + ")"
+
   def copy(self):
     # Note: copy just creates a MySQLObject
     # if the object needs to be used as more than just a MySQLObject
     # the copy method needs to be overriden
-    dup = MySQLObject()
+    dup = MySQLObject(self.db)
     dup.TableName = self.TableName
     dup.Fields = self.Fields
     dup.FieldDefinition = self.FieldDefinition
     dup.FieldDefault = self.FieldDefault
-    dup.WriteFields = self.WriteFields
-    dup.ReadFields = self.ReadFields
     dup.Keys = self.Keys
     dup.Identity = self.Identity
     dup.Mapping = self.Mapping
     dup.data = self.data.copy()
     return dup
-  def writeStream(self, f):
-    # Writes the data to a file-like object
-    # as a JSON dict
-    return jsonsaves(self.data)
+
   @staticmethod
   def getExistingTables(db):
     cur = db.cursor()
@@ -144,79 +175,43 @@ class MySQLObject(object):
 
 # Order should not matter
 # Of greater importance than order is to check membership
-class MySQLObjectGroup(set):
+class MySQLObjectGroup(object):
   base = None
-  def __init__(self, b, s = set()):
+  entries = None
+  def __init__(self, b):
     self.base = b
-    super(MySQLObjectGroup, self).__init__(s)
+    self.entries = dict()
 
-  def union(self, other):
-    return MySQLObjectGroup(self.base, 
-      super(MySQLObjectGroup, self).union(other))
+  def commit(self):
+    for entry in self.entries:
+      entry.commit()
+    self.base.db.commit()
 
-  def __or__(self, other):
-    return MySQLObjectGroup(self.base, 
-      super(MySQLObjectGroup, self).__or__(other))
-  
-  def intersection(self, other):
-    return MySQLObjectGroup(self.base, 
-      super(MySQLObjectGroup, self).intersection(other))
-  
-  def __and__(self, other):
-    return MySQLObjectGroup(self.base, 
-      super(MySQLObjectGroup, self).__and__(other))
+  def emplace(self, info = None):
+    entry = self.base.copy()
+    entry.update(info)
+    # Add to the set
+    slot = self.entries.get(entry)
+    if slot:
+      slot.update(info)
+      return False
+    else:
+      self.entries[entry] = entry
+      return True
 
-  def difference(self, other):
-    return MySQLObjectGroup(self.base, 
-      super(MySQLObjectGroup, self).difference(other))
-
-  def __sub__(self, other):
-    return MySQLObjectGroup(self.base, 
-      super(MySQLObjectGroup, self).__sub__(other))
-
-  def symmetric_difference(self, other):
-    return MySQLObjectGroup(self.base, 
-      super(MySQLObjectGroup, self).symmetric_difference(other))
-
-  def __xor__(self, other):
-    return MySQLObjectGroup(self.base, 
-      super(MySQLObjectGroup, self).__xor__(other))
-
-  def write(self, db):
-    slots = self.base.subList(len(self.base.WriteFields))
-    rep = []
-    for entry in self:
-      ordered = []
-      for key in self.base.WriteFields:
-        ordered.append(entry.data[key])
-      rep.extend(ordered)
-    if len(self):
-      cur = db.cursor()
-      cur.execute( \
-        "INSERT INTO " + self.base.TableName + " (" + \
-        ", ".join(self.base.WriteFields) + ") VALUES " + \
-        ", ".join(["(" + slots + ")"] * len(self)) + \
-        ";", rep);
-      cur.close()
-      db.commit()
-  def read(self, db):
-    # Appends the results to the end of the existing list
-    cur = db.cursor()
+  def read(self):
+    cur = self.base.db.cursor()
     cur.execute( \
-      "SELECT " + ", ".join(self.base.ReadFields) + \
+      "SELECT " + ", ".join(self.base.Fields) + \
       " FROM " + self.base.TableName + ";")
     for fetch in cur:
       entry = self.base.copy()
-      for idx, field in enumerate(self.base.ReadFields):
-        entry.data[field] = fetch[idx]
-      self.add(entry)
+      entry.rawUpdate(fetch)
+      if entry not in self.entries:
+        self.entries.add(entry)
+      else:
+        pass
     cur.close()
-  def writeStream(self, f):
-    # Writes the group of objects as JSON objects
-    justdata = []
-    for entry in self:
-      justdata.append(entry.data)
-    return jsonsaves(justdata)
 
 class Train(MySQLObject):
   TableName = "trains"
@@ -483,14 +478,15 @@ def decode_routes_page(uri):
   f.close()
   return [page]
 
-def decode_trains_asset(asset_id):
-  print "=== TRAIN ASSETS ==="
+def decode_trains_asset(train_data, asset_id):
+  # TODO: needs major overhaul for new paradigm
   # TODO, not very robust if certain pieces of data are missing
+  print "=== TRAIN ASSETS ==="
   pages = readGoogleEngineAsset(asset_id)
-  trains = MySQLObjectGroup(Train())
-  readings = MySQLObjectGroup(TrainReading())
-  stops = MySQLObjectGroup(TrainStop())
-  aliases = MySQLObjectGroup(Alias())
+  trains = train_data["trains"]
+  readings = train_data["readings"]
+  stops = train_data["stops"]
+  aliases = train_data["aliases"]
   for page in pages:
     # Aliasing of train numbers throws a major wrench into this
     for feature in page.get("features"):
@@ -510,22 +506,22 @@ def decode_trains_asset(asset_id):
       if aliasString != "":
         for alias in aliasString.split(","):
           properties["Alias"] = alias
-          aliasNums = aliases.add(Alias(properties))
-      trains.add(Train(properties))
+          aliasNums = aliases.emplace(properties)
+      trains.emplace(properties)
       # append the adjusted reading time
       readingTime = parseAmtrakDateTime(properties.get("LastValTS"), \
           properties.get("EventTZ") or properties.get("OriginTZ"))
       #if readingTime.hour != readingTime.utcnow().hour:
       #  # There are weird cases where the time simply doesn't align
       #  # Rather, new readings need to be time-stamped
-      #  print("RAW TIME")
-      #  print(parseAmtrakDateTime(properties.get("LastValTS"), 'U'))
-      #  print("EventTZ: " + str(properties.get("EventTZ")))
-      #  print("OriginTZ: " + properties.get("OriginTZ"))
-      #  print("ADJUSTED")
-      #  print(readingTime)
+      #  print ("RAW TIME")
+      #  print (parseAmtrakDateTime(properties.get("LastValTS"), 'U'))
+      #  print ("EventTZ: " + str(properties.get("EventTZ")))
+      #  print ("OriginTZ: " + properties.get("OriginTZ"))
+      #  print ("ADJUSTED")
+      #  print (readingTime)
       properties["RecordTime"] = readingTime
-      readings.add(TrainReading(properties))
+      readings.emplace(properties)
       count = 1
       while ("Station" + str(count)) in properties:
         stopinfo = jsonloads(properties.get("Station" + str(count)))
@@ -546,18 +542,13 @@ def decode_trains_asset(asset_id):
         stopinfo["adj_postarr"] = actarrtext and \
           parseAmtrakDateTime2(actarrtext, timezone)
         # Be aware of the use of boolean short-circuiting here
-        stops.add(TrainStop(stopinfo))
+        stops.emplace(stopinfo)
         count += 1
-  return {Train(): trains, \
-          TrainReading(): readings, \
-          TrainStop(): stops, \
-          Alias(): aliases \
-         }
 
-def decode_stations_asset(asset_id):
+def decode_stations_asset(stations, asset_id):
+  # TODO: needs overhaul with new paradigm
   print "=== STATION ASSETS ==="
   pages = readGoogleEngineAsset(asset_id)
-  stations = MySQLObjectGroup(Station())
   for page in pages:
     for feature in page.get("features"):
       # Convert the station data to objects
@@ -573,9 +564,7 @@ def decode_stations_asset(asset_id):
       # TODO: find the method of finding the correct timezone
       properties["LastModif"] = parseAmtrakDateTime( \
         properties.get("DateModif"), 'U')
-      stations.add(Station(properties)) \
-  # Check the existing codes
-  return stations
+      stations.emplace(properties) \
 
 # within 0.005 degrees latitude/longitude (~500 meters) are the same position
 
@@ -614,18 +603,7 @@ def read_ssl_keys(fname):
       ssl_values.append(parts[1])
   return fromkeys(ssl_keys, ssl_values)
 
-def read_train_assets(base_url):
-  pass
-
-
 def main(args):
-  tables = [ \
-    Train(), \
-    TrainReading(), \
-    TrainStop(), \
-    Station(), \
-    Alias() \
-    ]
   # --- OPEN DATABASE ---
   # Uses environment variables
   # Opens a connection to the database
@@ -644,32 +622,24 @@ def main(args):
     )
   existing = MySQLObject.getExistingTables(db)
   print(existing)
+  tables = { \
+    "trains": MySQLObjectGroup(Train(db)), \
+    "readings": MySQLObjectGroup(TrainReading(db)), \
+    "stops": MySQLObjectGroup(TrainStop(db)), \
+    "stations": MySQLObjectGroup(Station(db)), \
+    "aliases": MySQLObjectGroup(Alias(db)) \
+    }
   # --- DROP THE TABLES ---
   if "--reset" in args:
     print("RESETING TABLES")
-    for table in tables:
-      table.destroy(db, existing)
+    for table in tables.values():
+      table.base.destroy(existing)
     existing = MySQLObject.getExistingTables(db)
     db.commit()
   # --- CREATE TABLES ---
-  # Used to prevent attempts to create pre-existing tables
-  
-  for table in tables:
-    table.initialize(db, existing)
-  db.commit()
-  # --- ACCESS NEAR STATIC INFORMATION ---
-  # Contains a list of train routes
-  # Generally at http://www.amtrak.com/rttl/js/RoutesList.json
-  # Note: RoutesList.json isn't really helpful so I won't download it
-  #f = urlopen(environ.get('TRAIN_ROUTE_LIST_URI'))
-  
-  # Contains geometry for train routes
-  # Generally at http://www.amtrak.com/rttl/js/route_properties.json
-  route_pages = decode_routes_page(environ.get('TRAIN_ROUTE_PROPERTY_URI'))
-  
-  
+  for table in tables.values():
+    table.base.initialize(existing)
   # TODO: Wishlist, gain access to the train data directly instead of from a hack
-  
   # --- Configure Polling Rates ---
   poll_cycle_text = environ.get("POLL_CYCLE")
   station_poll_cycle_text = environ.get("STATION_POLL_CYCLE")
@@ -688,6 +658,9 @@ def main(args):
   
   # Uses file descriptor 3 to connect to write to the analysis program
   analysisPipe = fdopen(3, 'w')
+  # --- RETRIEVE PRE-EXISTING INFORMATION ---
+  for table in tables.values():
+    table.read()
   # --- POLL HIGHLY DYNAMIC INFORMATION ---
   running = True
   start_time = 0.0
@@ -695,14 +668,6 @@ def main(args):
   lastTS = None
   currentTS = None
   while running:
-    if count == 0:
-      stations = decode_stations_asset( \
-        environ.get("GOOGLE_ENGINE_STATIONS_ASSET_ID"))
-      oldstations = MySQLObjectGroup(Station())
-      oldstations.read(db)
-      newstations = stations - oldstations
-      if len(newstations):
-        newstations.write(db)
     # Time in seconds since the epoch
     current_time = time()
     # Number of seconds the previous run-through required
@@ -717,30 +682,14 @@ def main(args):
     currentTS = datetime(1990, 1, 1).utcnow()
     # Record the start time
     start_time = time()
-    # Read train assets
-    train_data = decode_trains_asset(environ.get("GOOGLE_ENGINE_TRAINS_ASSET_ID"))
-    for key, entry in train_data.iteritems():
-      # There's a major issue now where data needs to update but still has its same identity
-      # Fixing this issue may require following a much different paradigm, more similar to how analysis.R now is
-      oldentry = MySQLObjectGroup(key)
-      oldentry.read(db)
-      newentry = entry - oldentry
-      if key.TableName == "readings":
-        if lastTS:
-          print "LAST TIMESTAMP"
-          print lastTS
-          print "CURRENT TIMESTAMP"
-          print currentTS
-        for timeentry in newentry:
-          entrytime = timeentry.data["Time"]
-          if lastTS and entrytime.hour != currentTS.hour:
-            print("CURRENT TIME")
-            print(currentTS)
-            print("STRANGE TIME")
-            print(entrytime)
-      newentry.write(db)
+    # --- READ DATA ---
+    if count == 0:
+      decode_stations_asset(tables["stations"], \
+        environ.get("GOOGLE_ENGINE_STATIONS_ASSET_ID"))
+    decode_trains_asset(tables, environ.get("GOOGLE_ENGINE_TRAINS_ASSET_ID"))
+    for key, entry in tables.iteritems():
+      entry.commit()
     count = (count + 1) % station_poll_cycle
-    db.commit()
     # Write a character to the analysis pipe to trigger an update
     analysisPipe.write(' ')
     analysisPipe.flush()
