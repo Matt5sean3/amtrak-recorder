@@ -231,7 +231,8 @@ class Train(MySQLObject):
     "RouteName", \
     "OrigTime", \
     "OrigStation", \
-    "DestStation" \
+    "DestStation", \
+    "State" \
     ]
   FieldDefinition = [ \
     "TrainNum INT", \
@@ -239,6 +240,7 @@ class Train(MySQLObject):
     "OrigTime DATETIME", \
     "OrigStation CHAR(3)", \
     "DestStation CHAR(3)", \
+    "State ENUM('', 'Predeparture', 'Active', 'Completed')", \
     "CONSTRAINT NumOrig PRIMARY KEY (TrainNum, OrigTime)"
     ]
   Identity = [ \
@@ -250,7 +252,8 @@ class Train(MySQLObject):
     "RouteName": "RouteName", \
     "OrigTime": "OrigTime", \
     "OrigStation": "OrigCode", \
-    "DestStation": "DestCode" \
+    "DestStation": "DestCode", \
+    "State": "TrainState" \
     }
 
 class TrainReading(MySQLObject):

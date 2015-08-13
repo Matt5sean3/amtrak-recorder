@@ -7,7 +7,6 @@
       <directory>scripts</directory>
       <directory>poll.py</directory>
     </path>
-    <arg>--reset</arg>
     <env key="TRAIN_ROUTE_LIST_URI" value="http://www.amtrak.com/rttl/js/RoutesList.json" />
     <env key="TRAIN_ROUTE_PROPERTY_URI" value="http://www.amtrak.com/rttl/js/route_properties.json" />
     <env key="GOOGLE_ENGINE_TRAINS_ASSET_ID" value="01382379791355219452-08584582962951999356" />
@@ -31,7 +30,7 @@
       <directory>scripts</directory>
       <directory>analysis.R</directory>
     </path>
-    <!--<env key="HOME" value="@HOME_DIRECTORY@" />-->
+    <env key="HOME" value="@HOME_DIRECTORY@" />
     <env key="DB_HOST" value="localhost" />
     <env key="DB_USER" value="trains" />
     <env key="DB_PASSWD" value="train spotter" />

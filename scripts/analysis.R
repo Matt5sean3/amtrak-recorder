@@ -10,9 +10,28 @@ db <- dbConnect(MySQL(),
                 host="localhost",
                 port=3306)
 
+# === FETCH INFORMATION ABOUT ALREADY PROCESSED LINKS ===
+tab_name = "station_link"
+linksProcessed <- list()
+
+if(dbExistsTable(db, tab_name)) {
+  link_data <- dbReadTable(db, tab_name)
+  while(nrow(link_data) > 0) {
+    trainNum = link_data[1, "TrainNum"]
+    trainOrig = link_data[1, "OrigTime"]
+    identity = paste(trainNum, trainOrig)
+    processedSlots = unlist(link_data["TrainNum"]) == trainNum &
+      unlist(link_data["OrigTime"]) == trainOrig
+    # Keep the slots not in the group
+    link_data = link_data[which(!processedSlots), ]
+    # Count the number of links in the group
+    linksProcessed[identity] = length(which(processedSlots))
+  }
+}
 
 regulator <- file("stdin", 'r')
-linksProcessed <- list()
+
+
 # Regulate using stdin
 while(readChar(regulator, 1, TRUE) == " ") {
   linkRecords <- data.frame(
@@ -127,7 +146,6 @@ while(readChar(regulator, 1, TRUE) == " ") {
   
   if(nrow(linkRecords) > 0) {
     # === CREATE THE LINK TABLE IF NEEDED ===
-    tab_name = "station_link"
     if(!dbExistsTable(db, tab_name)) {
       # Create the table with a constraint
       tableQuery = paste("CREATE TABLE ", dbQuoteIdentifier(db, tab_name), " (
