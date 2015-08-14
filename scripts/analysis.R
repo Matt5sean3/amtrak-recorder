@@ -12,30 +12,19 @@ db <- dbConnect(MySQL(),
 
 # === FETCH INFORMATION ABOUT ALREADY PROCESSED LINKS ===
 tab_name = "station_link"
-linksProcessed <- list()
-
 if(dbExistsTable(db, tab_name)) {
-  link_data <- dbReadTable(db, tab_name)
-  while(nrow(link_data) > 0) {
-    trainNum = link_data[1, "TrainNum"]
-    trainOrig = link_data[1, "OrigTime"]
-    identity = paste(trainNum, trainOrig)
-    processedSlots = unlist(link_data["TrainNum"]) == trainNum &
-      unlist(link_data["OrigTime"]) == trainOrig
-    # Keep the slots not in the group
-    link_data = link_data[which(!processedSlots), ]
-    # Count the number of links in the group
-    linksProcessed[identity] = length(which(processedSlots))
-  }
+  oldLinkRecords <- dbReadTable(db, tab_name)
+} else {
+  oldLinkRecords <- NULL
 }
 
-regulator <- file("stdin", 'r')
-
+regulator = file("stdin")
 
 # Regulate using stdin
 while(readChar(regulator, 1, TRUE) == " ") {
   linkRecords <- data.frame(
-    Link = NULL,
+    FromStation = NULL,
+    ToStation = NULL,
     Duration = NULL,
     TrainNum = NULL,
     OrigTime = NULL,
@@ -44,31 +33,24 @@ while(readChar(regulator, 1, TRUE) == " ") {
   
   # I suspect some sort of caching behavior is happening with dbReadTable
   # === FETCH ALL THE TRAINS ===
-  #trains <- dbReadTable(db, "trains")
-  trains <- dbGetQuery(db, "SELECT * FROM trains;")
-  print("NUM TRAINS")
-  print(nrow(trains))
+  trains <- dbReadTable(db, "trains")
 
   # === EXTRACT ALL STOPS WHICH HAVE BEEN TRAVELED THROUGH ===
   stops <- dbReadTable(db, "stops")
-  print("NUM STOPS")
-  print(nrow(stops))
   
   traveled_stops <- stops[which(
       !is.na(unlist(stops["ActualArrival"])) | 
       !is.na(unlist(stops["ActualDeparture"]))
       ), ]
-  
-  print("NUM TRAVELED STOPS")
-  print(nrow(traveled_stops))
 
+  
   offset <- 0
   for(i in 1:nrow(trains)) {
     # === Trains are identified by their number and origin time ===
-    trainNum = unlist(trains[i, "TrainNum"])
-    trainOrig = unlist(trains[i, "OrigTime"])
+    trainNum <- unlist(trains[i, "TrainNum"])
+    trainOrig <- unlist(trains[i, "OrigTime"])
     identity <- paste(trainNum, trainOrig)
-    
+
     # === EXTRACT TRAVELED SCHEDULE FOR THIS TRAIN ===
     traveled_schedule = traveled_stops[which(
       unlist(traveled_stops["TrainNum"]) == trainNum & 
@@ -79,20 +61,42 @@ while(readChar(regulator, 1, TRUE) == " ") {
       unlist(traveled_schedule["ScheduledDeparture"]), 
       na.last=TRUE), ]
 
-    if(!(identity %in% names(linksProcessed))) {
-      linksProcessed[identity] = 0
-    }
-    nProcessed <- linksProcessed[[identity]]
     rows = nrow(traveled_schedule)
+
+    # === EXTRACT LINKS WHICH HAVE BEEN COMPUTED FOR THIS TRAIN ===
+    computed_links <- oldLinkRecords[which(
+      unlist(oldLinkRecords["TrainNum"]) == trainNum &
+      unlist(oldLinkRecords["OrigTime"]) == trainOrig), ]
     
-    # === IGNORE ALL THE ROWS YOU'RE DONE PROCESSING ===
-    if(rows > 0) {
-      if(rows - 1 != linksProcessed[identity]) {
-        #print(traveled_schedule)
+    # === DROP ENTRIES THAT ARE AREADY FULLY COMPUTED ===
+    # TODO: This could cause links between non-adjacent stations to be computed
+    # That's generally a bad thing
+    uncomputed = rep(TRUE, nrow(traveled_schedule))
+    rows = nrow(traveled_schedule)
+    for(row in 1:rows) {
+      if(row < rows) {
+        from = traveled_schedule[row, "StationCode"]
+        to = traveled_schedule[row + 1, "StationCode"]
+        fromComputed = any(
+          computed_links["FromStation"] == from & 
+          computed_links["ToStation"] == to)
+      } else {
+        # Last station shouldn't have a link from it
+        fromComputed = TRUE
       }
-      linksProcessed[identity] <- rows - 1
-      traveled_schedule = traveled_schedule[(nProcessed + 1):rows, ]
+      if(row > 1) {
+        from = traveled_schedule[row - 1, "StationCode"]
+        to = traveled_schedule[row, "StationCode"]
+        toComputed = any(
+          computed_links["FromStation"] == from & 
+          computed_links["ToStation"] == to)
+      } else {
+        # First station shouldn't have a link to it
+        toComputed = TRUE
+      }
+      uncomputed[[row]] = !(fromComputed && toComputed)
     }
+    traveled_schedule = traveled_schedule[which(uncomputed), ]
 
     # === NEED AT LEAST TWO ROWS FOR TRAVEL TIME CALCULATIONS ===
     if(nrow(traveled_schedule) > 1) {
@@ -127,15 +131,15 @@ while(readChar(regulator, 1, TRUE) == " ") {
       # === CALCULATE TRAVEL TIMES ===
       travel_time = arrival_ts - departure_ts
       # === NAME THE TRAVEL TIMES BY STATION TRAVELED FROM AND TO ===
-      rnames <- NULL
-      for(j in 1:(rows - 1)) {
-        rnames = c(rnames, paste(traveled_schedule[j, "StationCode"], 
-                                 traveled_schedule[j + 1, "StationCode"], sep = "_"))
-      }
+      fromStations <- NULL
+      toStations <- NULL
+      fromStations = traveled_schedule[1:(rows - 1), "StationCode"]
+      toStations = traveled_schedule[2:rows, "StationCode"]
       # === REASSOCIATE THE TRAVEL TIMES WITH THE TRAIN AND ORIGIN NUMBER ===
       linkRecords <- rbind(linkRecords,
         data.frame(
-          Link = rnames,
+          FromStation = fromStations,
+          ToStation = toStations,
           TrainNum = rep(trainNum, rows - 1),
           OrigTime = rep(trainOrig, rows - 1),
           Source = rep("Amtrak", rows - 1),
@@ -143,18 +147,20 @@ while(readChar(regulator, 1, TRUE) == " ") {
           ))
     }
   }
-  
+  oldLinkRecords <- rbind(oldLinkRecords, linkRecords)
   if(nrow(linkRecords) > 0) {
     # === CREATE THE LINK TABLE IF NEEDED ===
     if(!dbExistsTable(db, tab_name)) {
       # Create the table with a constraint
       tableQuery = paste("CREATE TABLE ", dbQuoteIdentifier(db, tab_name), " (
-        ", dbQuoteIdentifier(db, "Link"), " CHAR(7),
+        ", dbQuoteIdentifier(db, "FromStation"), " CHAR(3),
+        ", dbQuoteIdentifier(db, "ToStation"), " CHAR(3),
         ", dbQuoteIdentifier(db, "TrainNum"), " INT,
         ", dbQuoteIdentifier(db, "OrigTime"), " DATETIME,
         ", dbQuoteIdentifier(db, "Source"), " CHAR(10),
         ", dbQuoteIdentifier(db, "Duration"), " INT, 
-        CONSTRAINT pk_LinkTrainOrig PRIMARY KEY(Link, TrainNum, OrigTime, Source)
+        CONSTRAINT pk_FromToTrainOrig PRIMARY KEY(
+          FromStation, ToStation, TrainNum, OrigTime, Source)
         )", sep="")
       dbSendQuery(db, tableQuery)
     }
@@ -162,16 +168,16 @@ while(readChar(regulator, 1, TRUE) == " ") {
     names = paste("(", paste(dbQuoteIdentifier(db, names(linkRecords)), collapse = ", "), ")", sep="")
     # Coerce everything to characters
     entries = paste("(", 
-      dbQuoteString(db, as.character(unlist(linkRecords["Link"]))), ", ",
+      dbQuoteString(db, as.character(unlist(linkRecords["FromStation"]))), ", ",
+      dbQuoteString(db, as.character(unlist(linkRecords["ToStation"]))), ", ",
       dbQuoteString(db, as.character(unlist(linkRecords["TrainNum"]))), ", ",
       dbQuoteString(db, as.character(unlist(linkRecords["OrigTime"]))), ", ",
       dbQuoteString(db, as.character(unlist(linkRecords["Source"]))), ", ",
       dbQuoteString(db, as.character(unlist(linkRecords["Duration"]))),
       ")", sep="", collapse = ",\n")
-    # The implementation is incomplete, so write table can't be used with append
     dataQuery = paste("INSERT INTO", dbQuoteIdentifier(db, tab_name), names,
         "VALUES", entries, sep = " ");
-    #cat(dataQuery)
+    warnings()
     dbSendQuery(db, dataQuery)
   }
   print("CALCULATIONS COMPLETED")

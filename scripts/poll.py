@@ -276,7 +276,7 @@ class TrainReading(MySQLObject):
     "Speed DOUBLE", \
     "Heading ENUM('', 'N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW')", \
     "State ENUM('', 'Predeparture', 'Active', 'Completed')", \
-    "CONSTRAINT NumOrigTime PRIMARY KEY (TrainNum, OrigTime, Time)" \
+    "CONSTRAINT NumOrigTime PRIMARY KEY (TrainNum, OrigTime, Time, State)" \
     ]
   Identity = [ \
     "TrainNum", \
