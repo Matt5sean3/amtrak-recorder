@@ -71,32 +71,34 @@ while(readChar(regulator, 1, TRUE) == " ") {
     # === DROP ENTRIES THAT ARE AREADY FULLY COMPUTED ===
     # TODO: This could cause links between non-adjacent stations to be computed
     # That's generally a bad thing
-    uncomputed = rep(TRUE, nrow(traveled_schedule))
     rows = nrow(traveled_schedule)
-    for(row in 1:rows) {
-      if(row < rows) {
-        from = traveled_schedule[row, "StationCode"]
-        to = traveled_schedule[row + 1, "StationCode"]
-        fromComputed = any(
-          computed_links["FromStation"] == from & 
-          computed_links["ToStation"] == to)
-      } else {
-        # Last station shouldn't have a link from it
-        fromComputed = TRUE
+    if(rows > 0 && nrow(computed_links) > 0) {
+      uncomputed = rep(TRUE, nrow(traveled_schedule))
+      for(row in 1:rows) {
+        if(row < rows) {
+          from = traveled_schedule[row, "StationCode"]
+          to = traveled_schedule[row + 1, "StationCode"]
+          fromComputed = any(
+            computed_links["FromStation"] == from & 
+            computed_links["ToStation"] == to)
+        } else {
+          # Last station shouldn't have a link from it
+          fromComputed = TRUE
+        }
+        if(row > 1) {
+          from = traveled_schedule[row - 1, "StationCode"]
+          to = traveled_schedule[row, "StationCode"]
+          toComputed = any(
+            computed_links["FromStation"] == from & 
+            computed_links["ToStation"] == to)
+        } else {
+          # First station shouldn't have a link to it
+          toComputed = TRUE
+        }
+        uncomputed[[row]] = !(fromComputed && toComputed)
       }
-      if(row > 1) {
-        from = traveled_schedule[row - 1, "StationCode"]
-        to = traveled_schedule[row, "StationCode"]
-        toComputed = any(
-          computed_links["FromStation"] == from & 
-          computed_links["ToStation"] == to)
-      } else {
-        # First station shouldn't have a link to it
-        toComputed = TRUE
-      }
-      uncomputed[[row]] = !(fromComputed && toComputed)
+      traveled_schedule = traveled_schedule[which(uncomputed), ]
     }
-    traveled_schedule = traveled_schedule[which(uncomputed), ]
 
     # === NEED AT LEAST TWO ROWS FOR TRAVEL TIME CALCULATIONS ===
     if(nrow(traveled_schedule) > 1) {
