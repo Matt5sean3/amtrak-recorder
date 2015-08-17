@@ -104,7 +104,11 @@ class MySQLObject(object):
         new = info.get(value)
         # Needs to cast types sometimes
         # Rounding creates issues with strict equality
-        if self.inTable:
+        
+        # There are some weird cases where a previously
+        # defined value is set to None
+        # I intentionally ignore these
+        if self.inTable and new != None:
           old = self.data.get(key)
           if old != None and \
             type(old) != type(new):
@@ -113,9 +117,6 @@ class MySQLObject(object):
             (type(old) == float and \
              abs(old - new) < 1e-6):
             continue
-          print self.TableName + ": " + key
-          print old
-          print new
         self.consistent = False
         self.data[key] = new
     else:
@@ -412,6 +413,12 @@ def readGoogleEngineAsset(asset_id):
   readings = []
   url = asset_url
   pages = []
+  # Too many requests in too short a time
+  # can cause a 429 error
+  # The Internet connection may also cut out
+  # Right now either of those will crash the program
+  # TODO: create try-catch statements for urlopen to improve robustness
+  # TODO: Bad JSON is also not inconceivable
   while not done:
     f = urlopen(url)
     data = jsonload(f)

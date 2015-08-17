@@ -3,6 +3,97 @@
 require("DBI")
 require("RMySQL")
 
+# === DEFINE FUNCTIONS ===
+
+# === USED TO FILTER OUT STOPS FOR WHICH CALCULATIONS HAVE BEEN PERFORMED
+# Not perfect as some exceptional cases can slip through the cracks
+filter_linked_stops <- function(stops, links) {
+  nstops <- nrow(stops)
+  nlinks <- nrow(links)
+  if(nstops > 0 && nlinks > 0) {
+    uncomputed = rep(TRUE, nrow(stops))
+    for(row in 1:nstops) {
+      # Breaks down in the case where the first row
+      uncomputed[[row]] <- !((row >= nstops || any(
+          links["FromStation"] == stops[row, "StationCode"] & 
+          links["ToStation"] == stops[row + 1, "StationCode"])) &&
+        (row <= 1 || any(
+          links["FromStation"] == stops[row - 1, "StationCode"] & 
+          links["ToStation"] == stops[row, "StationCode"])))
+    }
+    return(stops[which(uncomputed), ])
+  }
+  return(stops)
+}
+
+# This is slower but fills the cracks
+has_link <- function(from, to, links) {
+  nlinks <- nrow(links)
+  if(nlinks > 0) {
+    return(any(unlist(links["FromStation"]) == from &
+      unlist(links["ToStation"]) == to))
+  }
+  return(FALSE)
+}
+
+# The links need to be sorted and properly stripped
+calculate_links <- function(stops, existing_links) {
+  # === NEED AT LEAST TWO ROWS FOR TRAVEL TIME CALCULATIONS ===
+  stops <- filter_linked_stops(stops, existing_links)
+  nstops <- nrow(stops)
+  if(nstops < 2) {
+    return(NULL)
+  }
+  # ATTEMPT TO FILL IN MISSING DEPARTURE TIMES
+  # ASSUME ON TIME DEPARTURE IF ARRIVAL IS SOON ENOUGH
+  undeparted_idxs = which(is.na(unlist(stops["ActualDeparture"])) & 
+    unlist(stops["ScheduledDeparture"]) > unlist(stops["ActualArrival"]))
+  stops[undeparted_idxs, "ActualDeparture"] = 
+    stops[undeparted_idxs, "ScheduledDeparture"]
+  # ASSUME IMMEDIATE DEPARTURE FOR THE REMAINING UNDEFINED DEPARTURES
+  undeparted_idxs = which(is.na(unlist(stops["ActualDeparture"])))
+  stops[undeparted_idxs, "ActualDeparture"] = 
+    stops[undeparted_idxs, "ActualArrival"]
+  
+  # === CONVERT ARRIVAL AND DEPARTURE TIMES TO TIMESTAMP ===
+  rows <- nrow(stops)
+  departures = unlist(stops[
+    1:(nstops - 1), "ActualDeparture"])
+  departure_ts = tapply(departures, 
+                        1:length(departures),
+                        as.POSIXct, 
+                        tz = "GMT", 
+                        format = "%Y-%m-%d %H:%M:%S")
+  arrivals = unlist(stops[2:nstops, "ActualArrival"])
+  arrival_ts = tapply(arrivals, 
+                      1:length(arrivals),
+                      as.POSIXct, 
+                      tz = "GMT", 
+                      format = "%Y-%m-%d %H:%M:%S")
+  # === CALCULATE TRAVEL TIMES ===
+  travel_time = arrival_ts - departure_ts
+  fromStations = stops[1:(nstops - 1), "StationCode"]
+  toStations = stops[2:nstops, "StationCode"]
+  # === REASSOCIATE THE TRAVEL TIMES WITH THE TRAIN AND ORIGIN NUMBER ===
+  ret <- data.frame(
+    FromStation = fromStations,
+    ToStation = toStations,
+    TrainNum = rep(stops[1, "TrainNum"], nstops - 1),
+    OrigTime = rep(stops[1, "OrigTime"], nstops - 1),
+    Source = rep("Amtrak", nstops - 1),
+    Duration = travel_time
+    )
+  # === DROP ALREADY CALCULATED ENTRIES THAT SLIPPED THROUGH ===
+  computed = rep(FALSE, nrow(ret))
+  for(i in 1:nrow(ret)) {
+    computed[[i]] <- has_link(ret[i, "FromStation"], 
+                              ret[i, "ToStation"], 
+                              existing_links)
+  }
+  return(ret[which(!computed), ])
+}
+
+
 db <- dbConnect(MySQL(), 
                 dbname="train_database", 
                 username="trains", 
@@ -33,7 +124,7 @@ while(readChar(regulator, 1, TRUE) == " ") {
   
   # I suspect some sort of caching behavior is happening with dbReadTable
   # === FETCH ALL THE TRAINS ===
-  trains <- dbReadTable(db, "trains")
+  trains <- dbGetQuery(db, "SELECT TrainNum, OrigTime FROM trains WHERE State=\"Active\"")
 
   # === EXTRACT ALL STOPS WHICH HAVE BEEN TRAVELED THROUGH ===
   stops <- dbReadTable(db, "stops")
@@ -61,93 +152,14 @@ while(readChar(regulator, 1, TRUE) == " ") {
       unlist(traveled_schedule["ScheduledDeparture"]), 
       na.last=TRUE), ]
 
-    rows = nrow(traveled_schedule)
-
     # === EXTRACT LINKS WHICH HAVE BEEN COMPUTED FOR THIS TRAIN ===
     computed_links <- oldLinkRecords[which(
       unlist(oldLinkRecords["TrainNum"]) == trainNum &
       unlist(oldLinkRecords["OrigTime"]) == trainOrig), ]
-    
     # === DROP ENTRIES THAT ARE AREADY FULLY COMPUTED ===
     # TODO: This could cause links between non-adjacent stations to be computed
     # That's generally a bad thing
-    rows = nrow(traveled_schedule)
-    if(rows > 0 && nrow(computed_links) > 0) {
-      uncomputed = rep(TRUE, nrow(traveled_schedule))
-      for(row in 1:rows) {
-        if(row < rows) {
-          from = traveled_schedule[row, "StationCode"]
-          to = traveled_schedule[row + 1, "StationCode"]
-          fromComputed = any(
-            computed_links["FromStation"] == from & 
-            computed_links["ToStation"] == to)
-        } else {
-          # Last station shouldn't have a link from it
-          fromComputed = TRUE
-        }
-        if(row > 1) {
-          from = traveled_schedule[row - 1, "StationCode"]
-          to = traveled_schedule[row, "StationCode"]
-          toComputed = any(
-            computed_links["FromStation"] == from & 
-            computed_links["ToStation"] == to)
-        } else {
-          # First station shouldn't have a link to it
-          toComputed = TRUE
-        }
-        uncomputed[[row]] = !(fromComputed && toComputed)
-      }
-      traveled_schedule = traveled_schedule[which(uncomputed), ]
-    }
-
-    # === NEED AT LEAST TWO ROWS FOR TRAVEL TIME CALCULATIONS ===
-    if(nrow(traveled_schedule) > 1) {
-      
-      # ATTEMPT TO FILL IN MISSING DEPARTURE TIMES
-      # ASSUME ON TIME DEPARTURE IF ARRIVAL IS SOON ENOUGH
-      undeparted_idxs = which(is.na(unlist(traveled_schedule["ActualDeparture"])) & 
-        unlist(traveled_schedule["ScheduledDeparture"]) > 
-          unlist(traveled_schedule["ActualArrival"]))
-      traveled_schedule[undeparted_idxs, "ActualDeparture"] = 
-        traveled_schedule[undeparted_idxs, "ScheduledDeparture"]
-      # ASSUME IMMEDIATE DEPARTURE FOR THE REMAINING UNDEFINED DEPARTURES
-      undeparted_idxs = which(is.na(unlist(traveled_schedule["ActualDeparture"])))
-      traveled_schedule[undeparted_idxs, "ActualDeparture"] = 
-        traveled_schedule[undeparted_idxs, "ActualArrival"]
-      
-      # === CONVERT ARRIVAL AND DEPARTURE TIMES TO TIMESTAMP ===
-      rows <- nrow(traveled_schedule)
-      departures = unlist(traveled_schedule[
-        1:(rows - 1), "ActualDeparture"])
-      departure_ts = tapply(departures, 
-                            1:length(departures),
-                            as.POSIXct, 
-                            tz = "GMT", 
-                            format = "%Y-%m-%d %H:%M:%S")
-      arrivals = unlist(traveled_schedule[2:rows, "ActualArrival"])
-      arrival_ts = tapply(arrivals, 
-                          1:length(arrivals),
-                          as.POSIXct, 
-                          tz = "GMT", 
-                          format = "%Y-%m-%d %H:%M:%S")
-      # === CALCULATE TRAVEL TIMES ===
-      travel_time = arrival_ts - departure_ts
-      # === NAME THE TRAVEL TIMES BY STATION TRAVELED FROM AND TO ===
-      fromStations <- NULL
-      toStations <- NULL
-      fromStations = traveled_schedule[1:(rows - 1), "StationCode"]
-      toStations = traveled_schedule[2:rows, "StationCode"]
-      # === REASSOCIATE THE TRAVEL TIMES WITH THE TRAIN AND ORIGIN NUMBER ===
-      linkRecords <- rbind(linkRecords,
-        data.frame(
-          FromStation = fromStations,
-          ToStation = toStations,
-          TrainNum = rep(trainNum, rows - 1),
-          OrigTime = rep(trainOrig, rows - 1),
-          Source = rep("Amtrak", rows - 1),
-          Duration = travel_time
-          ))
-    }
+    linkRecords <- rbind(linkRecords, calculate_links(traveled_schedule, computed_links))
   }
   oldLinkRecords <- rbind(oldLinkRecords, linkRecords)
   if(nrow(linkRecords) > 0) {
@@ -181,6 +193,14 @@ while(readChar(regulator, 1, TRUE) == " ") {
         "VALUES", entries, sep = " ");
     warnings()
     dbSendQuery(db, dataQuery)
+  }
+  # === GENERATE A TABLE OF PREDICTIONS ===
+  for(i in 1:nrow(trains)) {
+    trainNum <- unlist(trains[i, "TrainNum"])
+    trainOrig <- unlist(trains[i, "OrigTime"])
+    schedule <- stops[which(
+      unlist(stops["TrainNum"]) == trainNum &
+      unlist(stops["OrigTime"]) == trainOrig), ]
   }
   print("CALCULATIONS COMPLETED")
 }
