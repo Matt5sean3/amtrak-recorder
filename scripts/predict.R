@@ -3,120 +3,142 @@
 require("DBI")
 require("RMySQL")
 
+# TODO: examine times waiting at a station for a late train
+
 # === DEFINE FUNCTION ===
 str2date <- function(str) {
   return(as.POSIXct(unlist(str), tz = "GMT", format = "%Y-%m-%d %H:%M:%S"))
 }
 
-# === Open the database connection ===
-db <- dbConnect(MySQL(), 
-  dbname = "train_database",
-  username = "trains",
-  password = "train spotter",
-  host = "localhost",
-  port = 3306)
-
-# === READ REQUEST FROM SOCKET ===
-sock <- file("stdin")
-
-# First line is train number
-# Second line is origin time
-# Third line is station
-lines <- readLines(sock, n = 3, ok = TRUE, warn = FALSE)
-trainNum <- lines[1]
-origTime <- lines[2]
-station <- lines[3]
-
-# === READ SCHEDULE TABLE ===
-# Orders by ScheduleDeparture with NULLs forced to the bottom
-query <- paste("SELECT 
-    StationCode, 
-    ScheduledArrival, 
-    ScheduledDeparture, 
-    ActualArrival, 
-    ActualDeparture 
-  FROM stops WHERE
-    TrainNum=", dbQuoteString(db, trainNum), " AND 
-    OrigTime=", dbQuoteString(db, origTime), " ORDER BY 
-    ISNULL(ScheduledDeparture), ScheduledDeparture;", 
-  sep="")
-stops <- dbGetQuery(db, query)
-
-if(nrow(stops) == 0) {
-  cat("Records for that train originating at that time do not exist\r\n")
-  quit("no")
+# === CREATES ARRIVAL, DEPARTURE, AND TRAVEL TIME PREDICTION MATRIXES ===
+predictSchedule <- function(scheduled_arrivals, 
+                            scheduled_departures, 
+                            actual_arrivals,
+                            actual_departures,
+                            link_history, 
+                            nsamples) {
+  # Require that there are just as many scheduled arrivals as departures
+  if(length(scheduled_arrivals) != length(scheduled_departures)) {
+    stop("There must be an equal number of scheduled arrivals and departures")
+  }
+  nlinks <- length(scheduled_arrivals)
+  nkArr <- length(actual_arrivals)
+  nkDep <- length(actual_departures)
+  # Require that there be at most one more departure than arrival
+  if(nkDep != nkArr && nkDep != nkArr + 1) {
+    stop("Must have at most one more actual departures than arrivals")
+  }
+  # Interleave actual arrivals and departures
+  adpar <- NULL
+  if(nkDep > 0) {
+    adpar[2 * 1:nkDep - 1] <- actual_departures
+    if(nkArr > 0) {
+      adpar[2 * 1:nkArr] <- actual_arrivals
+    }
+  }
+  # Departure and Arrival times
+  dpar <- matrix(NA, nsamples, nlinks * 2) 
+  # Insert known values into matrix
+  # adpar is null when there are no known values
+  if(!is.null(adpar)) {
+    # Known columns
+    kCols <- length(adpar)
+    dpar[, 1:kCols] <- matrix(rep(adpar, nsamples), nsamples, kCols, byrow = TRUE)
+  }
+  # Predict the NA columns
+  for(i in 1:nlinks) {
+    col <- i * 2 - 1
+    if(is.na(dpar[1, col])) {
+      # Predict departure
+      depT <- scheduled_departures[[i]]
+      isLate <- dpar[, col - 1] > depT
+      lateIdxs <- which(isLate)
+      onTimeIdxs <- which(!isLate)
+      dpar[lateIdxs, col] <- dpar[lateIdxs, col - 1]
+      dpar[onTimeIdxs, col] <- rep(depT, length(onTimeIdxs))
+    }
+    col <- i * 2
+    if(is.na(dpar[1, col])) {
+      # Predict arrival
+      arrival <- unlist(dpar[, col - 1])
+      # TODO: a hard to debug issue can arise when there's no data for a given link
+      if(is.na(link_history[[i]])) {
+        print(i)
+      }
+      dt_sample <- sample(unlist(link_history[[i]]), nsamples, replace = TRUE)
+      dpar[, col] <- arrival + dt_sample
+    }
+  }
+  return(dpar)
 }
 
-# === GRAB THE RECORD FOR THE STATION IN QUESTION ===
-stationIdx = which(unlist(stops["StationCode"]) == station)
-if(length(stationIdx) == 0) {
-  cat("That station is not present on the route of that train\r\n")
-  quit("no")
+retrieve_stops <- function(db, trainNum, origTime) {
+  query <- paste("SELECT 
+      StationCode, 
+      ScheduledArrival, 
+      ScheduledDeparture, 
+      ActualArrival, 
+      ActualDeparture 
+    FROM stops WHERE
+      TrainNum=", dbQuoteString(db, paste(trainNum)), " AND 
+      OrigTime=", dbQuoteString(db, origTime), " ORDER BY 
+      ISNULL(ScheduledDeparture), ScheduledDeparture;", 
+    sep="")
+  stops <- dbGetQuery(db, query)
+
+  nlinks <- nrow(stops) - 1
+  scheduled_departures <- 
+    as.POSIXct(stops[1:nlinks, "ScheduledDeparture"], 
+    tz = "GMT", format = "%Y-%m-%d %H:%M:%S")
+  
+  scheduled_arrivals <- 
+    as.POSIXct(stops[2:(nlinks + 1), "ScheduledArrival"], 
+    tz = "GMT", format = "%Y-%m-%d %H:%M:%S")
+  
+  
+  # TODO, can sometimes be a too large array
+  actual_departures <- 
+    as.POSIXct(stops[1:nlinks, "ActualDeparture"], 
+    tz = "GMT", format = "%Y-%m-%d %H:%M:%S")
+
+  if(any(!is.na(actual_departures))) {
+
+    actual_departures <- actual_departures[
+      1:max(which(!is.na(unlist(actual_departures))))]
+  } else {
+    actual_departures <- list()
+  }
+
+  actual_arrivals <- 
+    as.POSIXct(stops[2:(nlinks + 1), "ActualArrival"], 
+    tz = "GMT", format = "%Y-%m-%d %H:%M:%S")
+
+  if(any(!is.na(actual_arrivals))) {
+  
+    actual_arrivals <- actual_arrivals[
+      1:max(which(!is.na(unlist(actual_arrivals))))]
+  } else {
+    actual_arrivals <- list()
+  }
+
+  return(list(
+    stations = stops["StationCode"],
+    scheduled_departures = scheduled_departures,
+    scheduled_arrivals = scheduled_arrivals,
+    actual_departures = actual_departures,
+    actual_arrivals = actual_arrivals
+    ))
 }
 
-# === CHECK IF THE TRAIN HAS ALREADY DEPARTED ===
-if(!is.na(stops[stationIdx, "ActualDeparture"])) {
-  cat(paste("The train has already departed", 
-    stops[stationIdx, "ActualDeparture"], "", sep="\r\n"))
-  quit("no")
+retrieve_link_history <- function(db, stops) {
+  link_history <- list()
+  for(i in 1:(length(stops) - 1)) {
+    link_history[[i]] <- dbGetQuery(db, paste(
+      "SELECT Duration FROM station_link WHERE FromStation=", 
+      dbQuoteString(db, stops[[i]]), " AND ToStation=", 
+      dbQuoteString(db, stops[[i + 1]]), ";", 
+      sep = ""))
+  }
+  return(link_history)
 }
 
-# === START ESTIMATING DEPARTURE TIME ===
-# First need to find where the train's last stop was
-
-# Arrival is fairly consistently captured
-lastArrIdx <- max(which(!is.na(unlist(stops["ActualArrival"]))))
-
-# Departure isn't always captured, but this should do okay
-# for the most part
-lastDepIdx <- max(which(!is.na(unlist(stops["ActualDeparture"]))))
-
-# Need the current time for interpreting results
-t <- Sys.time()
-
-# TODO: certain stations just don't provide a departure time
-# In order to account for those stations, the readings table needs to be used
-if(lastArrIdx == lastDepIdx) {
-  # Departed the last station
-  depT <- str2date(stops[lastDepIdx, "ActualDeparture"]) 
-  cat("Train in transit from ", stops[lastDepIdx, "StationCode"], " to ", 
-    stops[lastDepIdx + 1, "StationCode"], "\r\n")
-} else if(stops[lastArrIdx, "ActualArrival"] < stops[lastArrIdx, "ScheduledDeparture"]) {
-  # Arrived at the station on time
-  depT <- str2date(stops[lastArrIdx, "ScheduledDeparture"])
-  cat("Train is waiting to depart at ", stops[lastArrIdx, "StationCode"], "\r\n")
-  cat("Departure expected: ", strftime(str2date(stops[lastArrIdx, "ScheduledDeparture"])), "\r\n")
-} else {
-  # Arrived at the station late
-  # Assumes the train will leave ASAP
-  cat("Train is late waiting at ", stops[lastArrIdx, "StationCode"], "\r\n")
-  cat("Departure expected: ", strftime(str2date(stops[lastArrIdx, "ScheduledDeparture"])), "\r\n")
-  # TODO: current time in UTC
-  depT <- t
-}
-cat("Departure time is ", strftime(depT), "\r\n")
-cat("Current time is ", strftime(t), "\r\n")
-cat("Time difference is ", difftime(t, depT), "\r\n")
-
-# === READ HISTORY FOR EACH LINK BETWEEN THE CURRENT LOCATION AND DESTINATION ===
-for(i in lastArrIdx:(stationIdx - 1)) {
-  from = stops[i, "StationCode"]
-  to = stops[i + 1, "StationCode"]
-  times <- dbGetQuery(db, paste(
-    "SELECT Duration FROM station_link WHERE FromStation=", 
-    dbQuoteString(db, from), " AND ToStation=", dbQuoteString(db, to), ";", 
-    sep = ""))
-  dt <- mean(unlist(times))
-  cat("Average time to traverse ", from, " to ", to, " is ", dt / 60, " minutes\r\n")
-}
-
-# === GIVE THE SCHEDULED DEPARTURE TIME ===
-if(!is.na(stops[stationIdx, "ScheduledDeparture"])) {
-  cat(paste("The train is scheduled to depart", 
-    stops[stationIdx, "ScheduledDeparture"], "", sep="\r\n"))
-  quit("no")
-}
-
-warnings()
-
-dbDisconnect(db)

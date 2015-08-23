@@ -5,6 +5,9 @@ require("RMySQL")
 
 # === DEFINE FUNCTIONS ===
 
+# Include the prediction functions
+source("scripts/predict.R")
+
 # === USED TO FILTER OUT STOPS FOR WHICH CALCULATIONS HAVE BEEN PERFORMED
 # Not perfect as some exceptional cases can slip through the cracks
 filter_linked_stops <- function(stops, links) {
@@ -27,6 +30,8 @@ filter_linked_stops <- function(stops, links) {
 }
 
 # This is slower but fills the cracks
+# TODO: this is actually painfully slow and is only needed
+# in some relatively easy to define cases
 has_link <- function(from, to, links) {
   nlinks <- nrow(links)
   if(nlinks > 0) {
@@ -194,13 +199,88 @@ while(readChar(regulator, 1, TRUE) == " ") {
     warnings()
     dbSendQuery(db, dataQuery)
   }
-  # === GENERATE A TABLE OF PREDICTIONS ===
+  cat("=== GENERATE PREDICTIONS ===\r\n")
+  prediction_time = Sys.time()
   for(i in 1:nrow(trains)) {
+    # For now, deactivate this portion so that I can keep gathering data
     trainNum <- unlist(trains[i, "TrainNum"])
     trainOrig <- unlist(trains[i, "OrigTime"])
-    schedule <- stops[which(
-      unlist(stops["TrainNum"]) == trainNum &
-      unlist(stops["OrigTime"]) == trainOrig), ]
+    cat("PREDICTING TRAIN ", trainNum, "::", trainOrig, "\r\n", sep = "")
+    schedule <- retrieve_stops(db, trainNum, trainOrig)
+    stations <- unlist(schedule$stations)
+    link_history <- retrieve_link_history(db, unlist(stations))
+    for(i in 1:length(link_history)) {
+      # Ensure all links have at least one entry
+      if(length(unlist(link_history[[i]])) == 0) {
+        if(!is.na(schedule$scheduled_arrivals[[i]])) {
+          dt <- unclass(schedule$scheduled_arrivals[[i]]) - unclass(schedule$scheduled_departures[[i]])
+        } else {
+          dt <- unclass(schedule$scheduled_departures[[i + 1]]) - unclass(schedule$scheduled_departures[[i]])
+        }
+        link_history[i] <- dt
+      }
+      if(is.na(unlist(link_history[[i]]))) {
+        print("OVERWRITING LACKING LINK HISTORY")
+        print("TRAIN")
+        print(trainNum)
+        print("ORIGIN TIME")
+        print(trainOrig)
+        print("INDEX")
+        print(i)
+        if(!is.na(schedule$scheduled_arrivals[[i]])) {
+          dt <- unclass(schedule$scheduled_arrivals[[i]]) - unclass(schedule$scheduled_departures[[i]])
+        } else {
+          dt <- unclass(schedule$scheduled_departures[[i + 1]]) - unclass(schedule$scheduled_departures[[i]])
+        }
+        print(dt)
+        link_history[[i]] <- dt
+        print(link_history[[i]])
+      }
+    }
+    scheduled_arrivals <- schedule$scheduled_arrivals
+    scheduled_departures <- schedule$scheduled_departures
+    actual_arrivals <- schedule$actual_arrivals
+    actual_departures <- schedule$actual_departures
+    # need to add arrivals
+    if(length(actual_arrivals) < length(actual_departures) - 1) {
+      # Account for weird arrival cases
+      for(i in (length(actual_arrivals) + 1):length(actual_departures)) {
+        actual_arrivals[[i]] <- scheduled_arrivals[[i]]
+      }
+    }
+    # need to add departures
+    if(length(actual_departures) < length(actual_arrivals)) {
+      for(i in (length(actual_departures) + 1):length(actual_arrivals)) {
+        actual_departures[[i]] <- scheduled_departures[[i]]
+      }
+    }
+    dpar <- predictSchedule(unlist(scheduled_arrivals),
+      unlist(scheduled_departures),
+      unlist(actual_arrivals),
+      unlist(actual_departures),
+      link_history,
+      1000)
+    for(col in 1:ncol(dpar)) {
+      link = ceiling(col / 2)
+      origT = prediction_time - unclass(prediction_time)
+      if(col %% 2 == 1) {
+        tableName <- "departure_predictions"
+        station <- stations[link]
+      } else {
+        tableName <- "arrival_predictions"
+        station <- stations[link + 1]
+      }
+      trainNumStr <- paste(trainNum)
+      query <- paste("INSERT INTO ", dbQuoteIdentifier(db, tableName),
+        "(TrainNum, OrigTime, Station, RecordTime, Time, Source) VALUE 
+        (", dbQuoteString(db, trainNumStr), 
+        ", ", dbQuoteString(db, strftime(trainOrig, tz = "GMT")), 
+        ", ", dbQuoteString(db, station), 
+        ", ", dbQuoteString(db, strftime(prediction_time, tz = "GMT")), 
+        ", ", dbQuoteString(db, strftime(as.POSIXct(median(dpar[, col]), origin = origT, tz = "GMT"))), 
+        ", ", dbQuoteString(db, "Arctan"), ")", sep = "")
+      dbSendQuery(db, query)
+    }
   }
   print("CALCULATIONS COMPLETED")
 }

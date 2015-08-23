@@ -11,7 +11,7 @@ from time import time
 from datetime import datetime, date, time as daytime, timedelta
 
 # Used to poll the data files
-from urllib2 import urlopen
+from urllib2 import urlopen, HTTPError
 
 # Used to open numbered file descriptors to write to
 # for use with ArcLaunch
@@ -109,6 +109,8 @@ class MySQLObject(object):
         # defined value is set to None
         # I intentionally ignore these
         if self.inTable and new != None:
+          if (type(new) == str or type(new) == unicode) and len(new) == 0:
+            continue
           old = self.data.get(key)
           if old != None and \
             type(old) != type(new):
@@ -349,7 +351,7 @@ class Station(MySQLObject):
     ]
   # Interesting note, Canadian ZipCodes are non-numeric
   FieldDefinition = [ \
-    "Code CHAR(3) PRIMARY KEY", \
+    "Code CHAR(3)", \
     "Name TEXT", \
     "Latitude DOUBLE", \
     "Longitude DOUBLE", \
@@ -364,7 +366,8 @@ class Station(MySQLObject):
     "ZipCode CHAR(7)", \
     "IsTrainSt ENUM('Y', 'N')", \
     "Type ENUM('', 'Platform only (no shelter)', 'Platform with Shelter', 'Station Building (with waiting room)')", \
-    "DateModif DATETIME" \
+    "DateModif DATETIME", \
+    "CONSTRAINT CodeModif PRIMARY KEY (Code, DateModif)" \
     ]
   Identity = [ \
     "Code", \
@@ -382,6 +385,76 @@ class Station(MySQLObject):
     "IsTrainSt": "IsTrainSt", \
     "Type": "StaType", \
     "DateModif": "LastModif" \
+    }
+
+class ArrivalPrediction(MySQLObject):
+  TableName = "arrival_predictions"
+  Fields = [ \
+    "TrainNum", \
+    "OrigTime", \
+    "Station", \
+    "RecordTime", \
+    "Time", \
+    "Source" \
+    ]
+  FieldDefinition = [ \
+    "TrainNum INT", \
+    "OrigTime DATETIME", \
+    "Station CHAR(3)", \
+    "RecordTime DATETIME", \
+    "Time DATETIME", \
+    "Source CHAR(10)", \
+    "CONSTRAINT TrainOrigStationTime PRIMARY KEY (TrainNum, OrigTime, Station, RecordTime, Source)" \
+    ]
+  Identity = [ \
+    "TrainNum", \
+    "OrigTime", \
+    "Station", \
+    "RecordTime", \
+    "Source"\
+    ]
+  Mapping = { \
+    "TrainNum": "TrainNum", \
+    "OrigTime": "OrigTime", \
+    "Station": "code", \
+    "RecordTime": "RecordTime", \
+    "Time": "adj_estarr", \
+    "Source": "Source" \
+    }
+
+class DeparturePrediction(MySQLObject):
+  TableName = "departure_predictions"
+  Fields = [ \
+    "TrainNum", \
+    "OrigTime", \
+    "Station", \
+    "RecordTime", \
+    "Source", \
+    "Time" \
+    ]
+  FieldDefinition = [ \
+    "TrainNum INT", \
+    "OrigTime DATETIME", \
+    "Station CHAR(3)", \
+    "RecordTime DATETIME", \
+    "Time DATETIME", \
+    "Source CHAR(10)", \
+    "CONSTRAINT TrainOrigStationTime PRIMARY KEY (TrainNum, OrigTime, Station, RecordTime, Source)"
+    ]
+  Identity = [ \
+    "TrainNum", \
+    "OrigTime", \
+    "Station", \
+    "RecordTime", \
+    "Source" \
+    ]
+  Mapping = { \
+    "TrainNum": "TrainNum", \
+    "OrigTime": "OrigTime", \
+    "Station": "code", \
+    "RecordTime": "RecordTime", \
+    "Time": "adj_estdep", \
+    "Source": "Source"
     }
 
 # I've seperated out aliases because things get nonsensical
@@ -507,6 +580,8 @@ def decode_trains_asset(train_data, asset_id):
   readings = train_data["readings"]
   stops = train_data["stops"]
   aliases = train_data["aliases"]
+  arrival_predictions = train_data["arrival_predictions"]
+  departure_predictions = train_data["departure_predictions"]
   for page in pages:
     # Aliasing of train numbers throws a major wrench into this
     for feature in page.get("features"):
@@ -547,12 +622,17 @@ def decode_trains_asset(train_data, asset_id):
         stopinfo = jsonloads(properties.get("Station" + str(count)))
         stopinfo["TrainNum"] = properties.get("TrainNum")
         stopinfo["OrigTime"] = properties.get("OrigTime")
+        stopinfo["RecordTime"] = properties.get("RecordTime")
+        stopinfo["Source"] = "Amtrak"
         station = stopinfo.get("code")
         scheddeptext = stopinfo.get("schdep")
         schedarrtext = stopinfo.get("scharr")
         actdeptext = stopinfo.get("postdep")
         actarrtext = stopinfo.get("postarr")
+        estdeptext = stopinfo.get("estdep")
+        estarrtext = stopinfo.get("estarr")
         timezone = stopinfo.get("tz")
+        # Be aware of the use of boolean short-circuiting here
         stopinfo["adj_schdep"] = scheddeptext and \
           parseAmtrakDateTime2(scheddeptext, timezone)
         stopinfo["adj_scharr"] = schedarrtext and \
@@ -561,8 +641,15 @@ def decode_trains_asset(train_data, asset_id):
           parseAmtrakDateTime2(actdeptext, timezone)
         stopinfo["adj_postarr"] = actarrtext and \
           parseAmtrakDateTime2(actarrtext, timezone)
-        # Be aware of the use of boolean short-circuiting here
         stops.emplace(stopinfo)
+        if "estdep" in stopinfo:
+          stopinfo["adj_estdep"] = estdeptext and \
+            parseAmtrakDateTime2(estdeptext, timezone)
+          departure_predictions.emplace(stopinfo)
+        if "estarr" in stopinfo:
+          stopinfo["adj_estarr"] = estarrtext and \
+            parseAmtrakDateTime2(estarrtext, timezone)
+          arrival_predictions.emplace(stopinfo)
         count += 1
 
 def decode_stations_asset(stations, asset_id):
@@ -647,7 +734,9 @@ def main(args):
     "readings": MySQLObjectGroup(TrainReading(db)), \
     "stops": MySQLObjectGroup(TrainStop(db)), \
     "stations": MySQLObjectGroup(Station(db)), \
-    "aliases": MySQLObjectGroup(Alias(db)) \
+    "aliases": MySQLObjectGroup(Alias(db)), \
+    "arrival_predictions": MySQLObjectGroup(ArrivalPrediction(db)), \
+    "departure_predictions": MySQLObjectGroup(DeparturePrediction(db)) \
     }
   # --- DROP THE TABLES ---
   if "--reset" in args:
@@ -688,32 +777,36 @@ def main(args):
   lastTS = None
   currentTS = None
   while running:
-    # Time in seconds since the epoch
-    current_time = time()
-    # Number of seconds the previous run-through required
-    time_diff = current_time - start_time
-    start_time = current_time
-    # If the time reset, just immediately request
-    if time_diff < 0:
-      time_diff = poll_cycle
-    if time_diff < poll_cycle:
-      print "sleep:        " + str(poll_cycle - time_diff)
-      sleep(poll_cycle - time_diff)
-    currentTS = datetime(1990, 1, 1).utcnow()
-    # Record the start time
-    start_time = time()
-    # --- READ DATA ---
-    if count == 0:
-      decode_stations_asset(tables["stations"], \
-        environ.get("GOOGLE_ENGINE_STATIONS_ASSET_ID"))
-    decode_trains_asset(tables, environ.get("GOOGLE_ENGINE_TRAINS_ASSET_ID"))
-    for key, entry in tables.iteritems():
-      entry.commit()
-    count = (count + 1) % station_poll_cycle
-    # Write a character to the analysis pipe to trigger an update
-    analysisPipe.write(' ')
-    analysisPipe.flush()
-    lastTS = currentTS
+    try:
+      # Time in seconds since the epoch
+      current_time = time()
+      # Number of seconds the previous run-through required
+      time_diff = current_time - start_time
+      start_time = current_time
+      # If the time reset, just immediately request
+      if time_diff < 0:
+        time_diff = poll_cycle
+      if time_diff < poll_cycle:
+        print "sleep:        " + str(poll_cycle - time_diff)
+        sleep(poll_cycle - time_diff)
+      currentTS = datetime(1990, 1, 1).utcnow()
+      # Record the start time
+      start_time = time()
+      # --- READ DATA ---
+      if count == 0:
+        decode_stations_asset(tables["stations"], \
+          environ.get("GOOGLE_ENGINE_STATIONS_ASSET_ID"))
+      decode_trains_asset(tables, environ.get("GOOGLE_ENGINE_TRAINS_ASSET_ID"))
+      for key, entry in tables.iteritems():
+        entry.commit()
+      count = (count + 1) % station_poll_cycle
+      # Write a character to the analysis pipe to trigger an update
+      analysisPipe.write(' ')
+      analysisPipe.flush()
+      lastTS = currentTS
+    except HTTPError:
+      print "HTTP Error occurred, attempting to run loop again after 10s delay"
+      sleep(10)
   analysisPipe.write('q')
   analysisPipe.close()
   db.close()
