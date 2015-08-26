@@ -129,7 +129,7 @@ while(readChar(regulator, 1, TRUE) == " ") {
   
   # I suspect some sort of caching behavior is happening with dbReadTable
   # === FETCH ALL THE TRAINS ===
-  trains <- dbGetQuery(db, "SELECT TrainNum, OrigTime FROM trains WHERE State=\"Active\"")
+  trains <- dbGetQuery(db, "SELECT TrainNum, OrigTime FROM trains WHERE State=\"Active\";")
 
   # === EXTRACT ALL STOPS WHICH HAVE BEEN TRAVELED THROUGH ===
   stops <- dbReadTable(db, "stops")

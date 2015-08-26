@@ -21,9 +21,6 @@ from sys import argv
 # Used to store information long term
 from MySQLdb import connect
 
-# Needs to close gracefully with SIGINT
-import signal
-
 from json import load as jsonload, loads as jsonloads, dumps as jsonsaves
 
 
@@ -811,6 +808,6 @@ def main(args):
   analysisPipe.close()
   db.close()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
   main(argv)
 
