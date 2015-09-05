@@ -11,8 +11,14 @@ source("scripts/predict.R")
 # === USED TO FILTER OUT STOPS FOR WHICH CALCULATIONS HAVE BEEN PERFORMED
 # Not perfect as some exceptional cases can slip through the cracks
 filter_linked_stops <- function(stops, links) {
-  nstops <- nrow(stops)
-  nlinks <- nrow(links)
+  nstops <- 0
+  if(!is.null(stops)) {
+    nstops <- nrow(stops)
+  }
+  nlinks <- 0
+  if(!is.null(links)) {
+    nlinks <- nrow(links)
+  }
   if(nstops > 0 && nlinks > 0) {
     uncomputed = rep(TRUE, nrow(stops))
     for(row in 1:nstops) {
@@ -34,7 +40,7 @@ filter_linked_stops <- function(stops, links) {
 # in some relatively easy to define cases
 has_link <- function(from, to, links) {
   nlinks <- nrow(links)
-  if(nlinks > 0) {
+  if(!is.null(links) && nlinks > 0) {
     return(any(unlist(links["FromStation"]) == from &
       unlist(links["ToStation"]) == to))
   }
