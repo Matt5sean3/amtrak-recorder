@@ -16,7 +16,7 @@ for (i in 1:nrow(trains)) {
   train <- trains[i, ]
   # Needs conversion from string to POSIXct
   groundTruth <- dbGetQuery(db, paste0(
-    "SELECT StationCode, ActualArrival FROM stops WHERE TrainNum=",
+    "SELECT StationCode, ActualArrival, ScheduledArrival, ScheduledDeparture FROM stops WHERE TrainNum=",
     dbQuoteString(db, as.character(unlist(train["TrainNum"]))), " AND OrigTime=", 
     dbQuoteString(db, unlist(train["OrigTime"])), ";"))
   amtrakPredictions <- dbGetQuery(db, paste0(
@@ -50,20 +50,44 @@ for (i in 1:nrow(trains)) {
     amtrakPosixPredict <- as.POSIXct(unlist(amtrakSet["Time"]), format = "%Y-%m-%d %H:%M:%S", tz = "GMT")
     arctanPosixRecord <- as.POSIXct(unlist(arctanSet["RecordTime"]), format = "%Y-%m-%d %H:%M:%S", tz = "GMT")
     arctanPosixPredict <- as.POSIXct(unlist(arctanSet["Time"]), format = "%Y-%m-%d %H:%M:%S", tz = "GMT")
-    # Recorded time vs Predicted Arrival Time plot
+    # Get actual arrival time
+    actualArrivalTime <- as.POSIXct(unlist(stop["ActualArrival"]), format = "%Y-%m-%d %H:%M:%S", tz = "GMT")
+    # Get scheduled arrival time
+    if(is.na(unlist(stop["ActualArrival"]))) {
+      arrText <- unlist(stop["ScheduledDeparture"])
+    } else {
+      arrText <- unlist(stop["ScheduledArrival"])
+    }
+    # Get Actual Arrival Time
+    scheduledArrivalTime <- as.POSIXct(arrText, format = "%Y-%m-%d %H:%M:%S", tz = "GMT")
+    ylim <- c(
+      min(amtrakPosixPredict, arctanPosixPredict),
+      max(amtrakPosixPredict, arctanPosixPredict))
+    if(!is.na(actualArrivalTime)) {
+      ylim <- c(min(ylim[1], actualArrivalTime), max(ylim[2], actualArrivalTime))
+    }
+    if(!is.na(scheduledArrivalTime)) {
+      ylim <- c(min(ylim[1], actualArrivalTime), max(ylim[2], actualArrivalTime))
+    }
+    xlim <- c(
+      min(amtrakPosixRecord, arctanPosixRecord),
+      max(amtrakPosixRecord, arctanPosixRecord))
+    # Create the plot
     plot(amtrakPosixRecord, amtrakPosixPredict, 
       main = "Arrival Time Prediction across Time", 
       xlab = "Time of Prediction", 
       ylab = "Predicted Arrival Time",
       col = "red",
-      xlim = c(
-        min(amtrakPosixRecord, arctanPosixRecord),
-        max(amtrakPosixRecord, arctanPosixRecord)),
-      ylim = c(
-        min(amtrakPosixPredict, arctanPosixPredict),
-        max(amtrakPosixPredict, arctanPosixPredict)))
-    points(arctanPosixRecord, arctanPosixPredict,
-      col = "blue")
+      type = "s",
+      xlim = xlim,
+      ylim = ylim)
+    lines(arctanPosixRecord,
+      arctanPosixPredict,
+      col = "blue", 
+      type = "s")
+    # Draw a line for actual arrival time
+    lines(xlim, c(actualArrivalTime, actualArrivalTime), col = "green")
+    lines(xlim, c(scheduledArrivalTime, scheduledArrivalTime), col = "gray")
     dev.off()
   }
 }

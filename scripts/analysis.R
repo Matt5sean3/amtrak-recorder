@@ -266,9 +266,17 @@ while(readChar(regulator, 1, TRUE) == " ") {
       if(col %% 2 == 1) {
         tableName <- "departure_predictions"
         station <- stations[link]
+        if((col + 1) / 2 <= length(actual_departures)) {
+          # Skips departures that have already departed
+          next
+        }
       } else {
         tableName <- "arrival_predictions"
         station <- stations[link + 1]
+        if(col / 2 <= length(actual_arrivals)) {
+          # Skips arrivals that have already arrived
+          next
+        }
       }
       trainNumStr <- paste(trainNum)
       query <- paste("INSERT INTO ", dbQuoteIdentifier(db, tableName),
@@ -277,7 +285,7 @@ while(readChar(regulator, 1, TRUE) == " ") {
         ", ", dbQuoteString(db, strftime(trainOrig, tz = "GMT")), 
         ", ", dbQuoteString(db, station), 
         ", ", dbQuoteString(db, strftime(prediction_time, tz = "GMT")), 
-        ", ", dbQuoteString(db, strftime(as.POSIXct(median(dpar[, col]), origin = origT, tz = "GMT"))), 
+        ", ", dbQuoteString(db, strftime(as.POSIXct(median(dpar[, col]), origin = origT, tz = "GMT"), tz = "GMT")), 
         ", ", dbQuoteString(db, "Arctan"), ")", sep = "")
       dbSendQuery(db, query)
     }
