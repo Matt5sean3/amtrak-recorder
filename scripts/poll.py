@@ -1,7 +1,14 @@
 #!/usr/bin/python
 
+# Needs major revamp to conform to the restructuring
+
 # This script is meant to pull information from the Google Maps Engine
 # used internally by the Track a Train Webapp
+
+# This script is responsible for 4 tables
+# ALIAS, STATION, TRAIN, STOP
+# Generally, this information has low update frequency
+
 # Ideally, pulling directly from the source to generate the map will be 
 # possible.
 
@@ -22,7 +29,6 @@ from sys import argv
 from MySQLdb import connect
 
 from json import load as jsonload, loads as jsonloads, dumps as jsonsaves
-
 
 class MySQLObject(object):
   TableName = ""
@@ -57,11 +63,14 @@ class MySQLObject(object):
     return True
 
   def __hash__(self):
-    ax = hash(self.TableName)
+    ax = hash(self.getTableName())
     for key in self.Identity:
       value = self.data.get(key)
       ax += hash(value) if value else 0
     return ax
+
+  def getTableName(self):
+    return self.TableName
   
   def subList(self, num):
     return ", ".join(["%s"] * num)
@@ -73,23 +82,23 @@ class MySQLObject(object):
     return ret
   
   def initialize(self, existing):
-    if self.TableName in existing:
+    if self.getTableName() in existing:
       return
     cur = self.db.cursor()
-    rep = [self.TableName]
+    rep = [self.getTableName()]
     # Note: FieldDefinition is not escaped
     # so don't allow the field definitions to be publicly modified
     cur.execute( \
-      "CREATE TABLE " + self.TableName + \
+      "CREATE TABLE " + self.getTableName() + \
       " (" + ", ".join(self.FieldDefinition) + ");")
     cur.close()
     self.db.commit()
   
   def destroy(self, existing):
-    if self.TableName not in existing:
+    if self.getTableName() not in existing:
       return
     cur = self.db.cursor()
-    cur.execute("DROP TABLE " + self.TableName)
+    cur.execute("DROP TABLE " + self.getTableName())
     cur.close()
     self.db.commit()
 
@@ -139,8 +148,6 @@ class MySQLObject(object):
     if self.inTable:
       if not self.replaceCmd:
         self.prepare()
-      #print "UPDATING ENTRY"
-      #print self.TableName + ": " + str(self.getDataList(self.Fields))
       cur.execute(self.replaceCmd, self.getDataList(self.Fields))
     else:
       if not self.insertCmd:
@@ -153,10 +160,10 @@ class MySQLObject(object):
   def prepare(self):
     # Used to precompute an SQL string
     slots = self.subList(len(self.Fields))
-    self.replaceCmd = "REPLACE INTO " + self.TableName + \
+    self.replaceCmd = "REPLACE INTO " + self.getTableName() + \
       " (" + ", ".join(self.Fields) + ") VALUE " + \
       "(" + slots + ")"
-    self.insertCmd = "INSERT INTO " + self.TableName + \
+    self.insertCmd = "INSERT INTO " + self.getTableName() + \
       " (" + ", ".join(self.Fields) + ") VALUE " + \
       "(" + slots + ")"
 
@@ -165,7 +172,7 @@ class MySQLObject(object):
     # if the object needs to be used as more than just a MySQLObject
     # the copy method needs to be overriden
     dup = MySQLObject(self.db)
-    dup.TableName = self.TableName
+    dup.TableName = self.getTableName()
     dup.Fields = self.Fields
     dup.FieldDefinition = self.FieldDefinition
     dup.FieldDefault = self.FieldDefault
@@ -214,7 +221,7 @@ class MySQLObjectGroup(object):
     cur = self.base.db.cursor()
     cur.execute( \
       "SELECT " + ", ".join(self.base.Fields) + \
-      " FROM " + self.base.TableName + ";")
+      " FROM " + self.base.getTableName() + ";")
     for fetch in cur:
       entry = self.base.copy()
       entry.rawUpdate(fetch)
@@ -225,7 +232,6 @@ class MySQLObjectGroup(object):
     cur.close()
 
 class Train(MySQLObject):
-  TableName = "trains"
   Fields = [ \
     "TrainNum", \
     "RouteName", \
@@ -255,45 +261,49 @@ class Train(MySQLObject):
     "DestStation": "DestCode", \
     "State": "TrainState" \
     }
+  def getTableName(self):
+    return environ.get("TRAIN_TABLE")
 
-class TrainReading(MySQLObject):
-  TableName = "readings"
-  Fields = [ \
-    "TrainNum", \
-    "OrigTime", \
-    "Latitude", \
-    "Longitude", \
-    "Time", \
-    "Speed", \
-    "Heading", \
-    "State"]
-  FieldDefinition = [
-    "TrainNum INT", \
-    "OrigTime DATETIME", \
-    "Latitude DOUBLE", \
-    "Longitude DOUBLE", \
-    "Time DATETIME", \
-    "Speed DOUBLE", \
-    "Heading ENUM('', 'N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW')", \
-    "State ENUM('', 'Predeparture', 'Active', 'Completed')", \
-    "CONSTRAINT NumOrigTime PRIMARY KEY (TrainNum, OrigTime, Time, State)" \
-    ]
-  Identity = [ \
-    "TrainNum", \
-    "OrigTime", \
-    "Time", \
-    "State" \
-    ]
-  Mapping = { \
-    "TrainNum": "TrainNum", \
-    "OrigTime": "OrigTime", \
-    "Latitude": "Latitude", \
-    "Longitude": "Longitude", \
-    "Time": "RecordTime", \
-    "Speed": "Velocity", \
-    "Heading": "Heading", \
-    "State": "TrainState" \
-    }
+#class TrainReading(MySQLObject):
+#  TableName = "readings"
+#  Fields = [ \
+#    "TrainNum", \
+#    "OrigTime", \
+#    "Latitude", \
+#    "Longitude", \
+#    "Time", \
+#    "Speed", \
+#    "Heading", \
+#    "State"]
+#  FieldDefinition = [
+#    "TrainNum INT", \
+#    "OrigTime DATETIME", \
+#    "Latitude DOUBLE", \
+#    "Longitude DOUBLE", \
+#    "Time DATETIME", \
+#    "Speed DOUBLE", \
+#    "Heading ENUM('', 'N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW')", \
+#    "State ENUM('', 'Predeparture', 'Active', 'Completed')", \
+#    "CONSTRAINT NumOrigTime PRIMARY KEY (TrainNum, OrigTime, Time, State)" \
+#    ]
+#  Identity = [ \
+#    "TrainNum", \
+#    "OrigTime", \
+#    "Time", \
+#    "State" \
+#    ]
+#  Mapping = { \
+#    "TrainNum": "TrainNum", \
+#    "OrigTime": "OrigTime", \
+#    "Latitude": "Latitude", \
+#    "Longitude": "Longitude", \
+#    "Time": "RecordTime", \
+#    "Speed": "Velocity", \
+#    "Heading": "Heading", \
+#    "State": "TrainState" \
+#    }
+#  def getTableName(self):
+#    return environ.get("@@")
 
 class TrainStop(MySQLObject):
   TableName = "stops"
@@ -330,6 +340,8 @@ class TrainStop(MySQLObject):
     "ActualArrival": "adj_postarr", \
     "ActualDeparture": "adj_postdep" \
     }
+  def getTableName(self):
+    return environ.get("")
 
 class Station(MySQLObject):
   TableName = "stations"
@@ -478,7 +490,7 @@ def readGoogleEngineAsset(asset_id):
   asset_url = "https://www.googleapis.com/mapsengine/v1/tables/" + \
     asset_id + \
     "/features?version=published&key=" + \
-    environ.get("GOOGLE_ENGINE_KEY")# + \
+    environ.get("GOOGLE_ENGINE_KEY")
   done = False
   readings = []
   url = asset_url
@@ -574,7 +586,6 @@ def decode_trains_asset(train_data, asset_id):
   print "=== TRAIN ASSETS ==="
   pages = readGoogleEngineAsset(asset_id)
   trains = train_data["trains"]
-  readings = train_data["readings"]
   stops = train_data["stops"]
   aliases = train_data["aliases"]
   arrival_predictions = train_data["arrival_predictions"]
@@ -591,8 +602,6 @@ def decode_trains_asset(train_data, asset_id):
       properties["OrigTime"] = parseAmtrakDateTime(properties.get("OrigSchDep"),
           properties.get("OriginTZ"))
       # append latitude and longitude to properties
-      properties["Longitude"] = coords[0]
-      properties["Latitude"] = coords[1]
       # Record the aliases
       aliasString = properties.get("Aliases")
       if aliasString != "":
@@ -603,17 +612,7 @@ def decode_trains_asset(train_data, asset_id):
       # append the adjusted reading time
       readingTime = parseAmtrakDateTime(properties.get("LastValTS"), \
           properties.get("EventTZ") or properties.get("OriginTZ"))
-      #if readingTime.hour != readingTime.utcnow().hour:
-      #  # There are weird cases where the time simply doesn't align
-      #  # Rather, new readings need to be time-stamped
-      #  print ("RAW TIME")
-      #  print (parseAmtrakDateTime(properties.get("LastValTS"), 'U'))
-      #  print ("EventTZ: " + str(properties.get("EventTZ")))
-      #  print ("OriginTZ: " + properties.get("OriginTZ"))
-      #  print ("ADJUSTED")
-      #  print (readingTime)
       properties["RecordTime"] = readingTime
-      readings.emplace(properties)
       count = 1
       while ("Station" + str(count)) in properties:
         stopinfo = jsonloads(properties.get("Station" + str(count)))
@@ -688,12 +687,6 @@ def as_route(json):
   for point in json["features"]:
     pass
 
-def as_train_readings(json):
-  ret = []
-  for feature in json["features"]:
-    ret.append(TrainReading(feature));
-  return ret
-
 # Allows using a very simple file for SSL configuration
 def read_ssl_keys(fname):
   if fname == None:
@@ -726,9 +719,9 @@ def main(args):
     )
   existing = MySQLObject.getExistingTables(db)
   print(existing)
+    # "readings": MySQLObjectGroup(TrainReading(db)), \
   tables = { \
     "trains": MySQLObjectGroup(Train(db)), \
-    "readings": MySQLObjectGroup(TrainReading(db)), \
     "stops": MySQLObjectGroup(TrainStop(db)), \
     "stations": MySQLObjectGroup(Station(db)), \
     "aliases": MySQLObjectGroup(Alias(db)), \

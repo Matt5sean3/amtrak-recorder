@@ -1,0 +1,58 @@
+# Create the basic train information tables
+CREATE DATABASE IF NOT EXISTS `@TRAIN_DATABASE@`;
+USE `@TRAIN_DATABASE@`;
+CREATE TABLE IF NOT EXISTS `@ALIAS_TABLE@` (`TrainNum` INT, `OrigTime` DATETIME, `Alias` INT);
+CREATE TABLE IF NOT EXISTS `@STATION_TABLE@` (`Code` CHAR(3), `Name` TEXT, `Latitude` DOUBLE, 
+  `Longitude` DOUBLE, `Address` TEXT, `City` TEXT, `State` ENUM(
+  'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA', 
+  'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD', 
+  'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ',
+  'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC',
+  'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY', 
+  'DC', 'AB', 'BC', 'ON', 'QC', ''), ZipCode CHAR(7), IsTrainSt ENUM('Y', 'N'), 
+  `Type` ENUM('', 'Platform only (no shelter)', 'Platform with Shelter', 
+  'Station Building (with waiting room)'), `DateModif` DATETIME,
+  PRIMARY KEY(`Code`, `DateModif`));
+CREATE TABLE IF NOT EXISTS `@STOP_TABLE@` (`ID` INT PRIMARY KEY, `Station` CHAR(3), 
+  `TrainID` INT, `OrigTime` DATETIME, `Arrival` DATETIME, 
+  `Departure` DATETIME, UNIQUE (`TrainID`, `Station`));
+CREATE TABLE IF NOT EXISTS `@TRAIN_TABLE@` (`ID` INT PRIMARY KEY, `Number` INT, 
+  `OrigTime` DATETIME, `Route` TEXT, `OrigStation` CHAR(3), 
+  `DestStation` CHAR(3), 
+  `State` enum('', 'Predeparture', 'Active', 'Completed'),
+  UNIQUE (`Number`, `OrigTime`));
+
+# Create the train prediction tables
+CREATE TABLE IF NOT EXISTS `@ARRIVAL_TABLE@` (`ID` INT PRIMARY KEY, `StopID` INT, 
+  `Time` DATETIME, `Source` CHAR(20));
+CREATE TABLE IF NOT EXISTS `@DEPARTURE_TABLE@` (`ID` INT PRIMARY KEY, `StopID` INT, 
+  `Time` DATETIME, `Source` CHAR(20));
+
+# Create the user generated information database
+CREATE DATABASE IF NOT EXISTS `@USER_DATABASE@`;
+USE `@USER_DATABASE@`;
+
+# Create the gate keeper for creating users
+CREATE USER @GATE_KEEPER_USER@ IDENTIFIED BY '@GATE_KEEPER_PASSWD@';
+GRANT CREATE USER ON *.* TO @GATE_KEEPER_USER@;
+# Careful, the password hashes are also in this table
+# Should only have access to User column
+GRANT SELECT (User) ON `mysql`.`user` TO @GATE_KEEPER_USER@;
+GRANT SELECT ON `@TRAIN_DATABASE@`.* TO @GATE_KEEPER_USER@ WITH GRANT OPTION;
+GRANT CREATE, INSERT ON `@USER_DATABASE@`.* TO @GATE_KEEPER_USER@ WITH GRANT OPTION;
+
+# Readback is allowed to prevent repetition of the same analysis
+# Create the recorder for inserting from raw data
+CREATE USER @RECORDER_USER@ IDENTIFIED BY '@RECORDER_PASSWD@';
+GRANT SELECT, INSERT ON `@TRAIN_DATABASE@`.`@ALIAS_TABLE@` TO @RECORDER_USER@;
+GRANT SELECT, INSERT ON `@TRAIN_DATABASE@`.`@STATION_TABLE@` TO @RECORDER_USER@;
+GRANT SELECT, INSERT ON `@TRAIN_DATABASE@`.`@STOP_TABLE@` TO @RECORDER_USER@;
+GRANT SELECT, INSERT ON `@TRAIN_DATABASE@`.`@TRAIN_TABLE@` TO @RECORDER_USER@;
+
+# Create the analyzer for reading raw data and writing predictions
+CREATE USER @ANALYZER_USER@ IDENTIFIED BY '@ANALYZER_PASSWD@';
+GRANT SELECT ON `@TRAIN_DATABASE@`.* TO @ANALYZER_USER@;
+GRANT SELECT ON `@USER_DATABASE@`.* TO @ANALYZER_USER@;
+GRANT INSERT ON `@TRAIN_DATABASE@`.`@ARRIVAL_TABLE@` TO @ANALYZER_USER@;
+GRANT INSERT ON `@TRAIN_DATABASE@`.`@DEPARTURE_TABLE@` TO @ANALYZER_USER@;
+
